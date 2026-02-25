@@ -1,5 +1,6 @@
 package com.arflix.tv.ui.screens.search
 
+import android.os.SystemClock
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +27,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -97,6 +99,7 @@ fun SearchScreen(
     var movieItemIndex by remember { mutableIntStateOf(0) }
     var tvItemIndex by remember { mutableIntStateOf(0) }
     var isSearchInputFocused by remember { mutableStateOf(false) }
+    var suppressSelectUntilMs by remember { mutableLongStateOf(0L) }
 
     val searchFocusRequester = remember { FocusRequester() }
     val movieRowState = rememberTvLazyListState()
@@ -106,6 +109,7 @@ fun SearchScreen(
     // Auto-focus search input on launch
     LaunchedEffect(Unit) {
         searchFocusRequester.requestFocus()
+        suppressSelectUntilMs = SystemClock.elapsedRealtime() + 300L
     }
 
     LaunchedEffect(uiState.movieResults) {
@@ -219,6 +223,9 @@ fun SearchScreen(
                             true
                         }
                         Key.Enter, Key.DirectionCenter -> {
+                            if (SystemClock.elapsedRealtime() < suppressSelectUntilMs) {
+                                return@onPreviewKeyEvent true
+                            }
                             when (focusZone) {
                                 FocusZone.SIDEBAR -> {
                                     if (hasProfile && sidebarFocusIndex == 0) {

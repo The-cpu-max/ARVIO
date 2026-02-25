@@ -971,6 +971,8 @@ class StreamRepository @Inject constructor(
         tmdbId: Int? = null,
         timeoutMs: Long = 12_000L
     ): StreamSource? = withContext(Dispatchers.IO) {
+        val start = System.currentTimeMillis()
+        System.err.println("[VOD-TV] resolveEpisodeVodOnly START: title=$title S${season}E${episode} imdb=$imdbId tmdb=$tmdbId timeout=${timeoutMs}ms")
         val result = withTimeoutOrNull(timeoutMs.coerceIn(500L, 90_000L)) {
             runCatching {
                 iptvRepository.findEpisodeVodSource(
@@ -982,9 +984,12 @@ class StreamRepository @Inject constructor(
                     allowNetwork = true
                 )
             }.getOrElse { e ->
+                System.err.println("[VOD-TV] resolveEpisodeVodOnly EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
                 null
             }
         }
+        val elapsed = System.currentTimeMillis() - start
+        System.err.println("[VOD-TV] resolveEpisodeVodOnly DONE in ${elapsed}ms: result=${if (result != null) "found(${result.url?.take(60)})" else "null"}")
         result
     }
 

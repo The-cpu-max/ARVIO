@@ -4,17 +4,21 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.arflix.tv.data.model.Profile
 import com.arflix.tv.data.model.ProfileColors
+import com.arflix.tv.data.repository.AuthRepository
 import com.arflix.tv.data.repository.ProfileManager
 import com.arflix.tv.data.repository.ProfileRepository
 import com.arflix.tv.data.repository.TraktRepository
 import com.arflix.tv.data.repository.WatchlistRepository
 import com.arflix.tv.data.repository.IptvRepository
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import javax.inject.Inject
 
 data class ProfileUiState(
@@ -26,6 +30,7 @@ data class ProfileUiState(
     val showAddDialog: Boolean = false,
     val newProfileName: String = "",
     val selectedColorIndex: Int = 0,
+    val selectedAvatarId: Int = 0, // 0 = legacy letter, 1-24 = cartoon avatar
     val isKidsProfile: Boolean = false,
     // Edit profile dialog state
     val editingProfile: Profile? = null
@@ -37,8 +42,11 @@ class ProfileViewModel @Inject constructor(
     private val profileManager: ProfileManager,
     private val traktRepository: TraktRepository,
     private val watchlistRepository: WatchlistRepository,
-    private val iptvRepository: IptvRepository
+    private val iptvRepository: IptvRepository,
+    private val authRepository: AuthRepository
 ) : ViewModel() {
+
+    private val gson = Gson()
 
     private val _uiState = MutableStateFlow(ProfileUiState())
     val uiState: StateFlow<ProfileUiState> = _uiState.asStateFlow()
@@ -46,6 +54,7 @@ class ProfileViewModel @Inject constructor(
     init {
         loadProfiles()
         observeProfiles()
+        pullProfilesFromCloud()
     }
 
     private fun loadProfiles() {
@@ -75,6 +84,57 @@ class ProfileViewModel @Inject constructor(
     }
 
     /**
+     * Pull profiles from the cloud sync payload on screen open.
+     * This enables cross-device sync: profiles added/edited on Device A
+     * appear on Device B when the "Who's watching?" screen opens.
+     * Only restores the profiles list and active profile ID — the full
+     * settings/addons/catalogs restore still happens in SettingsViewModel.
+     */
+    private fun pullProfilesFromCloud() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val payloadResult = authRepository.loadAccountSyncPayload()
+                val payload = payloadResult.getOrNull()
+                if (payload.isNullOrBlank()) return@runCatching
+
+                val root = JSONObject(payload)
+                val cloudProfilesJson = root.optJSONArray("profiles")?.toString()
+                if (cloudProfilesJson.isNullOrBlank()) return@runCatching
+
+                val type = object : TypeToken<List<Profile>>() {}.type
+                val cloudProfiles: List<Profile> = gson.fromJson(cloudProfilesJson, type) ?: return@runCatching
+                if (cloudProfiles.isEmpty()) return@runCatching
+
+                val localProfiles = profileRepository.getProfiles()
+
+                // Only replace local profiles if cloud has different data.
+                // Compare by ID sets and names to detect additions, deletions, or renames.
+                val cloudIds = cloudProfiles.map { it.id }.toSet()
+                val localIds = localProfiles.map { it.id }.toSet()
+                val cloudSignature = cloudProfiles.map { "${it.id}:${it.name}:${it.avatarId}:${it.avatarColor}" }.toSet()
+                val localSignature = localProfiles.map { "${it.id}:${it.name}:${it.avatarId}:${it.avatarColor}" }.toSet()
+
+                if (cloudSignature != localSignature || cloudIds != localIds) {
+                    // Preserve the local active profile ID if it exists in the cloud
+                    // profile set. Don't force the other device's active selection.
+                    val localActiveId = profileRepository.getActiveProfileId()
+                    val effectiveActiveId = if (localActiveId != null && cloudIds.contains(localActiveId)) {
+                        localActiveId
+                    } else {
+                        root.optString("activeProfileId").ifBlank { null }
+                    }
+                    profileRepository.replaceProfilesFromCloud(cloudProfiles, effectiveActiveId)
+                    System.err.println("[CLOUD-SYNC] Profiles updated from cloud: ${cloudProfiles.size} profiles (was ${localProfiles.size} local)")
+                } else {
+                    System.err.println("[CLOUD-SYNC] Profiles already in sync, no update needed")
+                }
+            }.onFailure { error ->
+                System.err.println("[CLOUD-SYNC] Failed to pull profiles from cloud: ${error.message}")
+            }
+        }
+    }
+
+    /**
      * Preload Continue Watching data when a profile is focused (before selection).
      * This enables instant display when the user actually selects the profile.
      */
@@ -85,11 +145,18 @@ class ProfileViewModel @Inject constructor(
     }
 
     fun selectProfile(profile: Profile) {
+        val previousProfileId = profileManager.getProfileIdSync()
+        val isSameProfile = previousProfileId == profile.id
+
         // CRITICAL: Clear ALL profile caches BEFORE switching to ensure complete isolation
         // This prevents Profile 1's Trakt data from showing in Profile 2
+        // Skip cache invalidation when re-selecting the same profile (e.g., app restart)
+        // to preserve warm in-memory IPTV/VOD caches.
         traktRepository.clearAllProfileCaches()
         watchlistRepository.clearWatchlistCache()
-        iptvRepository.invalidateCache()
+        if (!isSameProfile) {
+            iptvRepository.invalidateCache()
+        }
 
         // Update ProfileManager's cache with the new profile ID
         // This ensures all profile-scoped keys use the correct prefix immediately
@@ -103,17 +170,23 @@ class ProfileViewModel @Inject constructor(
         viewModelScope.launch {
             profileRepository.setActiveProfile(profile.id)
         }
-        // Warm IPTV caches immediately for this profile so VOD can appear in stream sources
-        // without requiring the user to open IPTV settings/pages first.
+        // Warm IPTV channels from disk cache, then do a background network refresh.
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 iptvRepository.warmupFromCacheOnly()
-                // Also trigger a non-forced background refresh so Live TV starts loading
-                // as soon as profile is selected.
                 iptvRepository.loadSnapshot(
                     forcePlaylistReload = false,
                     forceEpgReload = false
                 )
+                System.err.println("[IPTV-STARTUP] Profile ${profile.name}: channels loaded")
+            }
+        }
+        // Pre-fetch Xtream VOD movie catalog + series catalog in PARALLEL with channel loading.
+        // Uses separate xtreamDataMutex so it doesn't block channel/EPG operations.
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                iptvRepository.warmXtreamVodCachesIfPossible()
+                System.err.println("[IPTV-STARTUP] Profile ${profile.name}: VOD catalogs warmed")
             }
         }
     }
@@ -136,6 +209,7 @@ class ProfileViewModel @Inject constructor(
             showAddDialog = true,
             newProfileName = "",
             selectedColorIndex = (_uiState.value.profiles.size) % ProfileColors.colors.size,
+            selectedAvatarId = 0,
             isKidsProfile = false
         )
     }
@@ -152,6 +226,10 @@ class ProfileViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(selectedColorIndex = index)
     }
 
+    fun setSelectedAvatarId(id: Int) {
+        _uiState.value = _uiState.value.copy(selectedAvatarId = id)
+    }
+
     fun createProfile() {
         val state = _uiState.value
         if (state.newProfileName.isBlank()) return
@@ -160,6 +238,7 @@ class ProfileViewModel @Inject constructor(
             profileRepository.createProfile(
                 name = state.newProfileName.trim(),
                 avatarColor = ProfileColors.getByIndex(state.selectedColorIndex),
+                avatarId = state.selectedAvatarId,
                 isKidsProfile = false
             )
             _uiState.value = _uiState.value.copy(showAddDialog = false)
@@ -173,6 +252,7 @@ class ProfileViewModel @Inject constructor(
             editingProfile = profile,
             newProfileName = profile.name,
             selectedColorIndex = ProfileColors.colors.indexOf(profile.avatarColor).takeIf { it >= 0 } ?: 0,
+            selectedAvatarId = profile.avatarId,
             isKidsProfile = false
         )
     }
@@ -191,6 +271,7 @@ class ProfileViewModel @Inject constructor(
                 editing.copy(
                     name = state.newProfileName.trim(),
                     avatarColor = ProfileColors.getByIndex(state.selectedColorIndex),
+                    avatarId = state.selectedAvatarId,
                     isKidsProfile = false
                 )
             )

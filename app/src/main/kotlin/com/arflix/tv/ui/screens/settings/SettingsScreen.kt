@@ -2,6 +2,7 @@ package com.arflix.tv.ui.screens.settings
 
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
+import android.os.SystemClock
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import androidx.compose.foundation.background
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -55,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -116,6 +119,7 @@ fun SettingsScreen(
     var sectionIndex by remember { mutableIntStateOf(0) }
     var contentFocusIndex by remember { mutableIntStateOf(0) }
     var activeZone by remember { mutableStateOf(Zone.CONTENT) }
+    var suppressSelectUntilMs by remember { mutableLongStateOf(0L) }
 
     // Sub-focus for addon rows: 0 = toggle, 1 = delete
     var addonActionIndex by remember { mutableIntStateOf(0) }
@@ -158,6 +162,7 @@ fun SettingsScreen(
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
+        suppressSelectUntilMs = SystemClock.elapsedRealtime() + 300L
     }
 
     LaunchedEffect(showSubtitlePicker, uiState.subtitleOptions) {
@@ -346,7 +351,7 @@ fun SettingsScreen(
                                 Zone.CONTENT -> {
                                     // Dynamic max based on current section
                                     val maxIndex = when (sectionIndex) {
-                                        0 -> 4 // General: 5 items (subtitle, audio, card layout, frame-rate matching, auto-play)
+                                        0 -> 6 // General: 7 items
                                         1 -> 2 // IPTV: Configure + Refresh + Delete
                                         2 -> uiState.catalogs.size // Catalogs: Add + N catalogs
                                         3 -> uiState.addons.size // Addons: N addons + "Add Custom" button
@@ -363,6 +368,9 @@ fun SettingsScreen(
                             true
                         }
                         Key.Enter, Key.DirectionCenter -> {
+                            if (SystemClock.elapsedRealtime() < suppressSelectUntilMs) {
+                                return@onPreviewKeyEvent true
+                            }
                             when (activeZone) {
                                 Zone.SIDEBAR -> {
                                     if (hasProfile && sidebarFocusIndex == 0) {
@@ -388,6 +396,8 @@ fun SettingsScreen(
                                                 2 -> viewModel.toggleCardLayoutMode()
                                                 3 -> viewModel.cycleFrameRateMatchingMode()
                                                 4 -> viewModel.setAutoPlayNext(!uiState.autoPlayNext)
+                                                5 -> viewModel.setAutoPlaySingleSource(!uiState.autoPlaySingleSource)
+                                                6 -> viewModel.cycleAutoPlayMinQuality()
                                             }
                                         }
                                         1 -> { // IPTV
@@ -545,12 +555,16 @@ fun SettingsScreen(
                         cardLayoutMode = uiState.cardLayoutMode,
                         frameRateMatchingMode = uiState.frameRateMatchingMode,
                         autoPlayNext = uiState.autoPlayNext,
+                        autoPlaySingleSource = uiState.autoPlaySingleSource,
+                        autoPlayMinQuality = uiState.autoPlayMinQuality,
                         focusedIndex = if (activeZone == Zone.CONTENT) contentFocusIndex else -1,
                         onSubtitleClick = openSubtitlePicker,
                         onAudioLanguageClick = openAudioLanguagePicker,
                         onCardLayoutToggle = { viewModel.toggleCardLayoutMode() },
                         onFrameRateMatchingClick = { viewModel.cycleFrameRateMatchingMode() },
-                        onAutoPlayToggle = { viewModel.setAutoPlayNext(it) }
+                        onAutoPlayToggle = { viewModel.setAutoPlayNext(it) },
+                        onAutoPlaySingleSourceToggle = { viewModel.setAutoPlaySingleSource(it) },
+                        onAutoPlayMinQualityClick = { viewModel.cycleAutoPlayMinQuality() }
                     )
                     "iptv" -> IptvSettings(
                         m3uUrl = uiState.iptvM3uUrl,
@@ -1254,12 +1268,16 @@ private fun GeneralSettings(
     cardLayoutMode: String,
     frameRateMatchingMode: String,
     autoPlayNext: Boolean,
+    autoPlaySingleSource: Boolean,
+    autoPlayMinQuality: String,
     focusedIndex: Int,
     onSubtitleClick: () -> Unit,
     onAudioLanguageClick: () -> Unit,
     onCardLayoutToggle: () -> Unit,
     onFrameRateMatchingClick: () -> Unit,
-    onAutoPlayToggle: (Boolean) -> Unit
+    onAutoPlayToggle: (Boolean) -> Unit,
+    onAutoPlaySingleSourceToggle: (Boolean) -> Unit,
+    onAutoPlayMinQualityClick: () -> Unit
 ) {
     Column {
         Text(
@@ -1324,6 +1342,27 @@ private fun GeneralSettings(
             isEnabled = autoPlayNext,
             isFocused = focusedIndex == 4,
             onToggle = onAutoPlayToggle
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        SettingsToggleRow(
+            title = "Auto-Play Single Source",
+            subtitle = "Skip source picker when only one valid source exists",
+            isEnabled = autoPlaySingleSource,
+            isFocused = focusedIndex == 5,
+            onToggle = onAutoPlaySingleSourceToggle
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        SettingsRow(
+            icon = Icons.Default.HighQuality,
+            title = "Auto-Play Min Quality",
+            subtitle = "Minimum quality required for single-source auto-play",
+            value = autoPlayMinQuality,
+            isFocused = focusedIndex == 6,
+            onClick = onAutoPlayMinQualityClick
         )
     }
 }

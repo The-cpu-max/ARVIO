@@ -95,16 +95,21 @@ fun AppNavigation(
     onExitApp: () -> Unit = {}
 ) {
     val navigateTopLevel: (String) -> Unit = { route ->
-        val popped = navController.popBackStack(route, false)
-        if (!popped) {
-            navController.navigate(route) {
-                launchSingleTop = true
-            }
+        navController.navigate(route) {
+            popUpTo(Screen.Home.route) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
         }
     }
 
+    // navigateHome uses a clean pop-to-Home strategy without restoreState.
+    // This prevents stale saved state from being restored (which could
+    // include a Details screen entry in the saved back stack).
     val navigateHome: () -> Unit = {
-        navigateTopLevel(Screen.Home.route)
+        navController.navigate(Screen.Home.route) {
+            popUpTo(Screen.Home.route) { inclusive = true }
+            launchSingleTop = true
+        }
     }
 
     NavHost(

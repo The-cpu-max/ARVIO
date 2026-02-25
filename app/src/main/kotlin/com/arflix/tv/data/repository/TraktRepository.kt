@@ -1,6 +1,7 @@
 package com.arflix.tv.data.repository
 
 import android.content.Context
+
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -71,7 +72,6 @@ class TraktRepository @Inject constructor(
     private val syncServiceProvider: Provider<TraktSyncService>,
     private val profileManager: ProfileManager
 ) {
-    private val TAG = "TraktRepository"
     private val gson = Gson()
 
     // Lazy sync service to avoid circular dependency
@@ -196,7 +196,10 @@ class TraktRepository @Inject constructor(
             saveToken(newToken)
             newToken.accessToken
         } catch (e: Exception) {
-            accessToken
+            System.err.println("TraktRepo: token refresh failed: ${e.message}")
+            // Token is expired and refresh failed – return null so getAuthHeader()
+            // can try loading a fresh token from Supabase profile.
+            null
         }
     }
 
@@ -265,6 +268,7 @@ class TraktRepository @Inject constructor(
             }
 
         } catch (e: Exception) {
+            System.err.println("TraktRepo: loadTokensFromProfile failed: ${e.message}")
         }
     }
 
@@ -311,37 +315,49 @@ class TraktRepository @Inject constructor(
             return "Bearer $token"
         }
 
+        System.err.println("TraktRepo:getAuthHeader: refreshTokenIfNeeded returned null, attemptedProfileLoad=$attemptedProfileTokenLoad")
+
         // Fallback: load Trakt tokens from Supabase profile if available
         if (!attemptedProfileTokenLoad) {
             attemptedProfileTokenLoad = true
             try {
                 val userId = context.traktDataStore.data.first()[USER_ID_KEY]
                     ?: context.authDataStore.data.first()[USER_ID_KEY]
+                System.err.println("TraktRepo:getAuthHeader: Supabase fallback userId=$userId")
                 if (!userId.isNullOrBlank()) {
                     val profile = supabase.postgrest
                         .from("profiles")
                         .select { filter { eq("id", userId) } }
                         .decodeSingleOrNull<JsonObject>()
                     val traktTokenElement = profile?.get("trakt_token")
+                    System.err.println("TraktRepo:getAuthHeader: profile trakt_token type=${traktTokenElement?.let { it::class.simpleName }}")
                     when {
                         traktTokenElement is JsonObject -> {
                             loadTokensFromProfile(traktTokenElement)
+                            System.err.println("TraktRepo:getAuthHeader: loaded tokens from profile JSON object")
                         }
                         traktTokenElement != null -> {
                             val accessToken = traktTokenElement.jsonPrimitive.content
+                            System.err.println("TraktRepo:getAuthHeader: profile has plain token, blank=${accessToken.isBlank()}")
                             if (accessToken.isNotBlank() && accessToken != "null") {
                                 context.traktDataStore.edit { prefs ->
                                     prefs[accessTokenKey()] = accessToken
                                 }
                             }
                         }
+                        else -> {
+                            System.err.println("TraktRepo:getAuthHeader: profile has NO trakt_token field")
+                        }
                     }
                 }
             } catch (e: Exception) {
+                System.err.println("TraktRepo: Supabase profile token load failed: ${e.message}")
             }
         }
 
-        val refreshed = refreshTokenIfNeeded() ?: return null
+        val refreshed = refreshTokenIfNeeded()
+        System.err.println("TraktRepo:getAuthHeader: second refreshTokenIfNeeded result=${if (refreshed != null) "got token" else "null"}")
+        if (refreshed == null) return null
         return "Bearer $refreshed"
     }
 
@@ -970,7 +986,9 @@ class TraktRepository @Inject constructor(
         // Prevent duplicate fetches
         if (continueWatchingFetching) {
             while (continueWatchingFetching) { delay(50) }
-            return@coroutineScope cachedContinueWatching
+            if (cachedContinueWatching.isNotEmpty()) {
+                return@coroutineScope cachedContinueWatching
+            }
         }
         continueWatchingFetching = true
 
@@ -984,16 +1002,41 @@ class TraktRepository @Inject constructor(
             // 1. Fetch watched shows + hidden shows in parallel
             // 2. Filter out hidden & stale shows
             // 3. Check progress for remaining shows
+            // Helper: detect HTTP 401/403 from Retrofit exceptions
+            fun isAuthError(e: Exception): Boolean {
+                val httpEx = e as? retrofit2.HttpException ?: return false
+                return httpEx.code() in setOf(401, 403)
+            }
+            // Re-acquire auth if the original token was stale
+            val authHolder = arrayOf(auth)
             val watchedShowsDeferred = async {
-                try {
-                    traktApi.getWatchedShows(auth, clientId)
-                        .sortedByDescending { it.lastWatchedAt }
-                } catch (_: Exception) { emptyList() }
+                var lastErr: Exception? = null
+                repeat(2) { attempt ->
+                    try {
+                        return@async traktApi.getWatchedShows(authHolder[0], clientId)
+                            .sortedByDescending { it.lastWatchedAt }
+                    } catch (e: Exception) {
+                        lastErr = e
+                        if (attempt == 0 && isAuthError(e)) {
+                            // Token may be expired – force-refresh and retry
+                            val refreshed = refreshTokenIfNeeded()
+                            if (refreshed != null) authHolder[0] = "Bearer $refreshed"
+                            delay(200)
+                        } else if (attempt == 0) {
+                            delay(500)
+                        }
+                    }
+                }
+                System.err.println("TraktRepo:getCW: getWatchedShows FAILED: ${lastErr?.message}")
+                emptyList()
             }
             val hiddenShowsDeferred = async {
                 try {
-                    traktApi.getHiddenProgressShows(auth, clientId)
-                } catch (_: Exception) { emptyList() }
+                    traktApi.getHiddenProgressShows(authHolder[0], clientId)
+                } catch (e: Exception) {
+                    System.err.println("TraktRepo:getCW: getHiddenShows failed: ${e.message}")
+                    emptyList()
+                }
             }
 
             val watchedShows = watchedShowsDeferred.await()
@@ -1024,7 +1067,7 @@ class TraktRepository @Inject constructor(
 
                         try {
                             val progress = traktApi.getShowProgress(
-                                auth, clientId, "2", traktId.toString(),
+                                authHolder[0], clientId, "2", traktId.toString(),
                                 specials = includeSpecials.toString(),
                                 countSpecials = includeSpecials.toString()
                             )
@@ -1061,18 +1104,20 @@ class TraktRepository @Inject constructor(
                             } else {
                                 null
                             }
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            System.err.println("TraktRepo:getCW: progress fetch failed for show: ${e.message}")
                             null
                         }
                     }
                 }
             }
 
-            candidates.addAll(showTasks.awaitAll().filterNotNull())
+            val showResults = showTasks.awaitAll().filterNotNull()
+            candidates.addAll(showResults)
 
             // Also include in-progress playback items (movies + episodes)
             try {
-                val playbackItems = getAllPlaybackProgress(auth)
+                val playbackItems = getAllPlaybackProgress(authHolder[0])
                 val processedKeys = candidates.map {
                     val item = it.item
                     "${item.mediaType}:${item.id}:${item.season ?: -1}:${item.episode ?: -1}"
@@ -1133,7 +1178,9 @@ class TraktRepository @Inject constructor(
                     )
                     processedKeys.add(key)
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                System.err.println("TraktRepo:getCW: playback progress failed: ${e.message}")
+            }
 
             // 3. Hydrate with TMDB Details (Parallel)
             // Only hydrate the top items we will actually display
@@ -1255,14 +1302,16 @@ class TraktRepository @Inject constructor(
         if (preloadedProfileCache.containsKey(profileId)) return
 
         try {
-            // Directly access the cache with the specific profile's key
-            val cacheKey = stringPreferencesKey("profile_${profileId}_trakt_continue_watching_cache_v1")
             val prefs = context.traktDataStore.data.first()
-            val json = prefs[cacheKey] ?: return
-
             val type = com.google.gson.reflect.TypeToken
                 .getParameterized(MutableList::class.java, ContinueWatchingItem::class.java)
                 .type
+
+            // Try Trakt cache key first, then fall back to local CW key (for non-Trakt profiles)
+            val traktCacheKey = stringPreferencesKey("profile_${profileId}_trakt_continue_watching_cache_v1")
+            val localCacheKey = stringPreferencesKey("profile_${profileId}_local_continue_watching_v1")
+            val json = prefs[traktCacheKey] ?: prefs[localCacheKey] ?: return
+
             val parsed: List<ContinueWatchingItem> = gson.fromJson(json, type)
             preloadedProfileCache[profileId] = parsed
 
@@ -1493,6 +1542,23 @@ class TraktRepository @Inject constructor(
             if (item.mediaType != mediaType) return@firstOrNull false
             if (mediaType == MediaType.MOVIE) return@firstOrNull true
             item.season == season && item.episode == episode
+        }
+    }
+
+    /**
+     * Get best local Continue Watching entry for a show/movie regardless of provided episode.
+     * Useful when remote history is unavailable but local playback progress exists.
+     */
+    suspend fun getBestLocalContinueWatchingEntry(
+        mediaType: MediaType,
+        tmdbId: Int
+    ): ContinueWatchingItem? {
+        val items = loadLocalContinueWatchingRaw()
+            .filter { it.id == tmdbId && it.mediaType == mediaType }
+        if (items.isEmpty()) return null
+        return items.maxByOrNull { item ->
+            (item.resumePositionSeconds.coerceAtLeast(0L) * 1000L) +
+                item.progress.coerceAtLeast(0).toLong()
         }
     }
 
@@ -2299,23 +2365,21 @@ class TraktRepository @Inject constructor(
         }
         cacheInitializing = true
         try {
-            // PROFILE ISOLATION: Check if this profile has Trakt auth
-            // If not, leave caches empty so all content appears unwatched
             val hasAuth = refreshTokenIfNeeded() != null
-            if (!hasAuth) {
-                // No Trakt for this profile - caches stay empty
-                watchedMoviesCache.clear()
-                watchedEpisodesCache.clear()
-                cacheInitialized = true
-                return
-            }
 
-            // Try to load from Supabase first (source of truth)
-            val supabaseMovies = syncService.getWatchedMovies()
-            val supabaseEpisodes = syncService.getWatchedEpisodes()
+            // Always try Supabase first (works for both Trakt and non-Trakt profiles).
+            // Supabase watched_movies/watched_episodes are written by TraktSyncService
+            // regardless of Trakt auth status.
+            val supabaseMovies = runCatching { syncService.getWatchedMovies() }.getOrDefault(emptySet())
+            val supabaseEpisodes = runCatching { syncService.getWatchedEpisodes() }.getOrDefault(emptySet())
 
-            val traktMovies = if (supabaseMovies.isEmpty()) getWatchedMovies() else emptySet()
-            val traktEpisodes = if (supabaseEpisodes.isEmpty()) getWatchedEpisodes() else emptySet()
+            // For Trakt-authenticated profiles, also fetch from Trakt as fallback
+            val traktMovies = if (hasAuth && supabaseMovies.isEmpty()) {
+                runCatching { getWatchedMovies() }.getOrDefault(emptySet())
+            } else emptySet()
+            val traktEpisodes = if (hasAuth && supabaseEpisodes.isEmpty()) {
+                runCatching { getWatchedEpisodes() }.getOrDefault(emptySet())
+            } else emptySet()
 
             watchedMoviesCache.clear()
             watchedMoviesCache.addAll(if (supabaseMovies.isNotEmpty()) supabaseMovies else traktMovies)
@@ -2325,12 +2389,15 @@ class TraktRepository @Inject constructor(
 
             cacheInitialized = true
         } catch (e: Exception) {
-            // If sync service fails, try direct Trakt load
+            // If all sources fail, try direct Trakt load as last resort
             try {
-                watchedMoviesCache.clear()
-                watchedMoviesCache.addAll(getWatchedMovies())
-                watchedEpisodesCache.clear()
-                watchedEpisodesCache.addAll(getWatchedEpisodes())
+                val hasAuth = refreshTokenIfNeeded() != null
+                if (hasAuth) {
+                    watchedMoviesCache.clear()
+                    watchedMoviesCache.addAll(getWatchedMovies())
+                    watchedEpisodesCache.clear()
+                    watchedEpisodesCache.addAll(getWatchedEpisodes())
+                }
                 cacheInitialized = true
             } catch (_: Exception) {
                 // No data available - mark as initialized with empty caches

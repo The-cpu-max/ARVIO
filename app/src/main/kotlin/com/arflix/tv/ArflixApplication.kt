@@ -45,6 +45,9 @@ class ArflixApplication : Application(), Configuration.Provider, ImageLoaderFact
         super.onCreate()
         instance = this
 
+        // Initialize OkHttp disk cache before any network calls
+        OkHttpProvider.init(this)
+
         // Initialize crash reporting (gracefully handles missing Firebase config)
         CrashlyticsProvider.initialize()
         // Initialize active profile asynchronously to avoid blocking cold start.

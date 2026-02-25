@@ -50,6 +50,8 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import com.arflix.tv.data.model.Profile
 import com.arflix.tv.data.model.ProfileColors
+import com.arflix.tv.ui.components.AvatarIcon
+import com.arflix.tv.ui.components.AvatarRegistry
 import com.arflix.tv.ui.theme.BackgroundGradientCenter
 import com.arflix.tv.ui.theme.BackgroundGradientEnd
 import com.arflix.tv.ui.theme.BackgroundGradientStart
@@ -220,7 +222,8 @@ fun ProfileSelectionScreen(
                 name = uiState.newProfileName,
                 onNameChange = { viewModel.setNewProfileName(it) },
                 selectedColorIndex = uiState.selectedColorIndex,
-                onColorSelected = { viewModel.setSelectedColorIndex(it) },
+                selectedAvatarId = uiState.selectedAvatarId,
+                onAvatarSelected = { viewModel.setSelectedAvatarId(it) },
                 onConfirm = { viewModel.createProfile() },
                 onDismiss = { viewModel.hideAddDialog() }
             )
@@ -229,11 +232,11 @@ fun ProfileSelectionScreen(
         // Edit Profile Dialog
         uiState.editingProfile?.let { profile ->
             EditProfileDialog(
-                profile = profile,
                 name = uiState.newProfileName,
                 onNameChange = { viewModel.setNewProfileName(it) },
                 selectedColorIndex = uiState.selectedColorIndex,
-                onColorSelected = { viewModel.setSelectedColorIndex(it) },
+                selectedAvatarId = uiState.selectedAvatarId,
+                onAvatarSelected = { viewModel.setSelectedAvatarId(it) },
                 onConfirm = { viewModel.updateProfile() },
                 onDelete = { viewModel.deleteProfile(profile); viewModel.hideEditDialog() },
                 onDismiss = { viewModel.hideEditDialog() }
@@ -282,8 +285,8 @@ private fun ProfileAvatar(
                     shape = RoundedCornerShape(8.dp)
                 ),
                 colors = ClickableSurfaceDefaults.colors(
-                    containerColor = Color(profile.avatarColor),
-                    focusedContainerColor = Color(profile.avatarColor)
+                    containerColor = if (profile.avatarId > 0) Color.Transparent else Color(profile.avatarColor),
+                    focusedContainerColor = if (profile.avatarId > 0) Color.Transparent else Color(profile.avatarColor)
                 ),
                 border = ClickableSurfaceDefaults.border(
                     focusedBorder = androidx.tv.material3.Border(
@@ -292,17 +295,29 @@ private fun ProfileAvatar(
                     )
                 )
             ) {
+                val bgModifier = if (profile.avatarId > 0) {
+                    val (c1, c2) = AvatarRegistry.gradientColors(profile.avatarId)
+                    Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(c1, c2)))
+                } else {
+                    Modifier.fillMaxSize()
+                }
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = bgModifier,
                     contentAlignment = Alignment.Center
                 ) {
-                    // First letter of name
-                    Text(
-                        text = profile.name.firstOrNull()?.uppercase() ?: "?",
-                        fontSize = 48.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
+                    if (profile.avatarId > 0) {
+                        AvatarIcon(
+                            avatarId = profile.avatarId,
+                            modifier = Modifier.fillMaxSize().padding(12.dp)
+                        )
+                    } else {
+                        Text(
+                            text = profile.name.firstOrNull()?.uppercase() ?: "?",
+                            fontSize = 48.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
                 }
             }
 

@@ -9,6 +9,7 @@ data class Profile(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val avatarColor: Long = ProfileColors.random(),
+    val avatarId: Int = 0, // 0 = legacy letter+color, 1-24 = Compose-drawn avatar
     val isKidsProfile: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val lastUsedAt: Long = System.currentTimeMillis()

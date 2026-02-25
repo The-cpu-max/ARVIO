@@ -982,9 +982,8 @@ class MediaRepository @Inject constructor(
      */
     suspend fun getSeasonEpisodes(tvId: Int, seasonNumber: Int): List<Episode> {
         val cacheKey = "tv_${tvId}_season_$seasonNumber"
-        getFromCache(seasonEpisodesCache, cacheKey)?.let { return it }
+        val cachedEpisodes = getFromCache(seasonEpisodesCache, cacheKey)
 
-        val season = tmdbApi.getTvSeason(tvId, seasonNumber, apiKey)
         // First ensure the global watched cache is initialized.
         traktRepository.initializeWatchedCache()
 
@@ -998,6 +997,19 @@ class MediaRepository @Inject constructor(
                 emptySet<String>()
             }
         }
+        val hasShowWatchedData = watchedEpisodes.any { it.startsWith("show_tmdb:$tvId:") }
+
+        // Re-apply watched status on cached episodes so stale season cache doesn't hide badges.
+        if (cachedEpisodes != null) {
+            return cachedEpisodes.map { episode ->
+                val episodeKey = "show_tmdb:$tvId:${episode.seasonNumber}:${episode.episodeNumber}"
+                episode.copy(
+                    isWatched = if (hasShowWatchedData) episodeKey in watchedEpisodes else episode.isWatched
+                )
+            }
+        }
+
+        val season = tmdbApi.getTvSeason(tvId, seasonNumber, apiKey)
 
         val episodes = season.episodes.map { episode ->
             val episodeKey = "show_tmdb:$tvId:$seasonNumber:${episode.episodeNumber}"
@@ -1018,7 +1030,10 @@ class MediaRepository @Inject constructor(
 
         val type = if (mediaType == MediaType.TV) "tv" else "movie"
         val credits = tmdbApi.getCredits(type, mediaId, apiKey)
-        val cast = credits.cast.take(15).map { it.toCastMember() }
+        val cast = credits.cast
+            .distinctBy { it.id } // TMDB can occasionally return duplicate cast IDs.
+            .take(15)
+            .map { it.toCastMember() }
         castCache[cacheKey] = CacheEntry(cast, System.currentTimeMillis())
         return cast
     }
@@ -1039,10 +1054,16 @@ class MediaRepository @Inject constructor(
         }
 
         val result = if (recommendations != null && recommendations.results.isNotEmpty()) {
-            recommendations.results.take(12).map { it.toMediaItem(mediaType) }
+            recommendations.results
+                .map { it.toMediaItem(mediaType) }
+                .distinctBy { it.id }
+                .take(12)
         } else {
             val similar = tmdbApi.getSimilar(type, mediaId, apiKey)
-            similar.results.take(12).map { it.toMediaItem(mediaType) }
+            similar.results
+                .map { it.toMediaItem(mediaType) }
+                .distinctBy { it.id }
+                .take(12)
         }
         similarCache[cacheKey] = CacheEntry(result, System.currentTimeMillis())
         cacheItems(result)

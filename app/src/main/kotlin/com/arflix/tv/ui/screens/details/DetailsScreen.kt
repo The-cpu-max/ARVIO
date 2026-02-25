@@ -2,6 +2,7 @@ package com.arflix.tv.ui.screens.details
 
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -46,8 +47,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -158,11 +161,12 @@ fun DetailsScreen(
     // Start on buttons for both TV and movies (buttons are now shown for both)
     var focusedSection by remember { mutableStateOf(FocusSection.BUTTONS) }
     var buttonIndex by remember { mutableIntStateOf(0) }
-    var episodeIndex by remember { mutableIntStateOf(0) }
-    var seasonIndex by remember { mutableIntStateOf(0) }
+    var episodeIndex by rememberSaveable { mutableIntStateOf(0) }
+    var seasonIndex by rememberSaveable { mutableIntStateOf(0) }
     var castIndex by remember { mutableIntStateOf(0) }
     var reviewIndex by remember { mutableIntStateOf(0) }
     var similarIndex by remember { mutableIntStateOf(0) }
+    var suppressSelectUntilMs by remember { mutableLongStateOf(0L) }
     
     // Sidebar state
     var isSidebarFocused by remember { mutableStateOf(false) }
@@ -172,6 +176,7 @@ fun DetailsScreen(
     
     // Stream Selector state
     var showStreamSelector by remember { mutableStateOf(false) }
+    var pendingAutoPlayRequest by remember { mutableStateOf<PendingAutoPlayRequest?>(null) }
     
     // Episode Context Menu state
     var showEpisodeContextMenu by remember { mutableStateOf(false) }
@@ -198,6 +203,49 @@ fun DetailsScreen(
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
+        suppressSelectUntilMs = SystemClock.elapsedRealtime() + 300L
+    }
+
+    LaunchedEffect(pendingAutoPlayRequest, uiState.isLoadingStreams, uiState.streams) {
+        val request = pendingAutoPlayRequest ?: return@LaunchedEffect
+        if (uiState.isLoadingStreams) return@LaunchedEffect
+
+        val validStreams = uiState.streams.filter(::isAutoPlayableStream)
+        val minThreshold = minQualityThreshold(uiState.autoPlayMinQuality)
+        val singleStream = validStreams.singleOrNull()
+
+        when {
+            singleStream != null && qualityScoreForAutoPlay(singleStream.quality) >= minThreshold -> {
+                onNavigateToPlayer(
+                    mediaType,
+                    mediaId,
+                    request.season,
+                    request.episode,
+                    uiState.imdbId,
+                    singleStream.url?.takeIf { it.isNotBlank() },
+                    singleStream.addonId.takeIf { it.isNotBlank() },
+                    singleStream.source.takeIf { it.isNotBlank() },
+                    request.startPositionMs
+                )
+            }
+            validStreams.size > 1 || uiState.streams.isNotEmpty() -> {
+                showStreamSelector = true
+            }
+            else -> {
+                onNavigateToPlayer(
+                    mediaType,
+                    mediaId,
+                    request.season,
+                    request.episode,
+                    uiState.imdbId,
+                    null,
+                    null,
+                    null,
+                    request.startPositionMs
+                )
+            }
+        }
+        pendingAutoPlayRequest = null
     }
 
     // Sync episodeIndex with initialEpisodeIndex from ViewModel
@@ -339,6 +387,9 @@ fun DetailsScreen(
                             }
                         }
                         Key.Enter, Key.DirectionCenter -> {
+                            if (SystemClock.elapsedRealtime() < suppressSelectUntilMs) {
+                                return@onPreviewKeyEvent true
+                            }
                             if (isSidebarFocused) {
                                 if (hasProfile && sidebarFocusIndex == 0) {
                                     onSwitchProfile()
@@ -358,24 +409,44 @@ fun DetailsScreen(
                                 FocusSection.BUTTONS -> {
                                     when (buttonIndex) {
                                         0 -> { // Play - Auto-play highest quality source
-                                            if (mediaType == MediaType.TV) {
-                                                val season = uiState.playSeason
+                                            val season = if (mediaType == MediaType.TV) {
+                                                uiState.playSeason
                                                     ?: uiState.episodes.getOrNull(episodeIndex)?.seasonNumber
                                                     ?: 1
-                                                val episode = uiState.playEpisode
+                                            } else null
+                                            val episode = if (mediaType == MediaType.TV) {
+                                                uiState.playEpisode
                                                     ?: uiState.episodes.getOrNull(episodeIndex)?.episodeNumber
                                                     ?: 1
-                                                val startPositionMs = if (
-                                                    season == uiState.playSeason &&
-                                                    episode == uiState.playEpisode
-                                                ) uiState.playPositionMs else null
-                                                onNavigateToPlayer(
-                                                    mediaType, mediaId,
-                                                    season, episode, uiState.imdbId, null, null, null, startPositionMs
+                                            } else null
+                                            val startPositionMs = if (
+                                                mediaType == MediaType.TV &&
+                                                season == uiState.playSeason &&
+                                                episode == uiState.playEpisode
+                                            ) {
+                                                uiState.playPositionMs
+                                            } else if (mediaType == MediaType.MOVIE) {
+                                                uiState.playPositionMs
+                                            } else null
+
+                                            if (uiState.autoPlaySingleSource && !uiState.imdbId.isNullOrBlank()) {
+                                                pendingAutoPlayRequest = PendingAutoPlayRequest(
+                                                    season = season,
+                                                    episode = episode,
+                                                    startPositionMs = startPositionMs
                                                 )
+                                                viewModel.loadStreams(uiState.imdbId, season, episode)
                                             } else {
                                                 onNavigateToPlayer(
-                                                    mediaType, mediaId, null, null, uiState.imdbId, null, null, null, uiState.playPositionMs
+                                                    mediaType,
+                                                    mediaId,
+                                                    season,
+                                                    episode,
+                                                    uiState.imdbId,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    startPositionMs
                                                 )
                                             }
                                         }
@@ -590,6 +661,36 @@ fun DetailsScreen(
 
 private enum class FocusSection {
     BUTTONS, EPISODES, SEASONS, CAST, REVIEWS, SIMILAR
+}
+
+private data class PendingAutoPlayRequest(
+    val season: Int?,
+    val episode: Int?,
+    val startPositionMs: Long?
+)
+
+private fun qualityScoreForAutoPlay(quality: String): Int {
+    return when {
+        quality.contains("4K", ignoreCase = true) || quality.contains("2160p", ignoreCase = true) -> 4
+        quality.contains("1080p", ignoreCase = true) -> 3
+        quality.contains("720p", ignoreCase = true) -> 2
+        quality.contains("480p", ignoreCase = true) -> 1
+        else -> 0
+    }
+}
+
+private fun minQualityThreshold(value: String): Int {
+    return when (value.trim().lowercase()) {
+        "720p", "hd" -> 2
+        "1080p", "fullhd", "fhd" -> 3
+        "4k", "2160p", "uhd" -> 4
+        else -> 0
+    }
+}
+
+private fun isAutoPlayableStream(stream: com.arflix.tv.data.model.StreamSource): Boolean {
+    val url = stream.url?.trim().orEmpty()
+    return url.startsWith("http", ignoreCase = true)
 }
 
 private fun handleLeft(
@@ -1060,7 +1161,10 @@ private fun DetailsContent(
                         contentPadding = PaddingValues(start = contentStartPadding, end = 400.dp),  // Extra padding to ensure last items visible
                         horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        itemsIndexed(episodes, key = { _, ep -> ep.episodeNumber }) { index, episode ->
+                        itemsIndexed(
+                            episodes,
+                            key = { index, ep -> "${ep.seasonNumber}_${ep.episodeNumber}_$index" }
+                        ) { index, episode ->
                             // Read state inside item to ensure recomposition on focus change
                             val isFocused = currentFocusedSection == FocusSection.EPISODES && index == currentEpisodeIndex
                             EpisodeCard(
@@ -1143,7 +1247,10 @@ private fun DetailsContent(
                             contentPadding = PaddingValues(start = contentStartPadding, end = 120.dp),  // 90dp card + 30dp margin
                             horizontalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            itemsIndexed(cast, key = { _, c -> c.id }) { index, castMember ->
+                            itemsIndexed(
+                                cast,
+                                key = { index, c -> "${c.id}_${c.character}_$index" }
+                            ) { index, castMember ->
                                 CircularCastCard(
                                     castMember = castMember,
                                     isFocused = focusedSection == FocusSection.CAST && index == castIndex,
@@ -1187,7 +1294,10 @@ private fun DetailsContent(
                             contentPadding = PaddingValues(start = contentStartPadding, end = 350.dp),  // 320dp card + 30dp margin
                             horizontalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            itemsIndexed(reviews, key = { _, r -> r.id }) { index, review ->
+                            itemsIndexed(
+                                reviews,
+                                key = { index, r -> "${r.id}_$index" }
+                            ) { index, review ->
                                 ReviewCard(
                                     review = review,
                                     isFocused = focusedSection == FocusSection.REVIEWS && index == reviewIndex
@@ -1233,7 +1343,10 @@ private fun DetailsContent(
                             ),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            itemsIndexed(similar, key = { _, m -> m.id }) { index, mediaItem ->
+                            itemsIndexed(
+                                similar,
+                                key = { index, m -> "${m.mediaType.name}_${m.id}_$index" }
+                            ) { index, mediaItem ->
                                 SimilarMediaCard(
                                     item = mediaItem,
                                     logoImageUrl = similarLogoUrls["${mediaItem.mediaType}_${mediaItem.id}"],

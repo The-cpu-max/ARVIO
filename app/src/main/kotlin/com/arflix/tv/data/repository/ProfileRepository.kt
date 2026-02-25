@@ -91,10 +91,11 @@ class ProfileRepository @Inject constructor(
     /**
      * Create a new profile
      */
-    suspend fun createProfile(name: String, avatarColor: Long, isKidsProfile: Boolean = false): Profile {
+    suspend fun createProfile(name: String, avatarColor: Long, avatarId: Int = 0, isKidsProfile: Boolean = false): Profile {
         val profile = Profile(
             name = name,
             avatarColor = avatarColor,
+            avatarId = avatarId,
             isKidsProfile = isKidsProfile
         )
 

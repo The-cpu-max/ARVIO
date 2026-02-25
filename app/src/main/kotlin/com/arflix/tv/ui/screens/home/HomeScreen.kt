@@ -16,6 +16,7 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -406,7 +407,7 @@ fun HomeScreen(
                         ImageRequest.Builder(context)
                             .data(backdropUrl)
                             .size(backdropWidthPx, backdropHeightPx)
-                            .precision(Precision.EXACT)
+                            .precision(Precision.INEXACT)  // allow cache reuse for similar sizes
                             .allowHardware(true)
                             .crossfade(false)
                             .build()
@@ -420,39 +421,16 @@ fun HomeScreen(
                 }
             }
 
-            // === PREMIUM MULTI-LAYER SCRIM SYSTEM ===
-
-            // Layer 1: Strong left gradient for hero text area (Netflix-style)
-            // Uses colorStops with percentages to work on any resolution
+            // === SCRIM SYSTEM - single draw pass for all 3 gradients (avoids 3x fullscreen overdraw) ===
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        brush = heroLeftScrim
-                    )
+                    .drawBehind {
+                        drawRect(brush = heroLeftScrim)
+                        drawRect(brush = heroTopScrim)
+                        drawRect(brush = heroBottomScrim)
+                    }
             )
-
-            // Layer 2: Top vignette for clock/status area
-            // Uses colorStops with percentages to work on any resolution
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        brush = heroTopScrim
-                    )
-            )
-
-            // Layer 3: Bottom floor-fade (starts low, darker at bottom)
-            // Uses colorStops with percentages to work on any resolution
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        brush = heroBottomScrim
-                    )
-            )
-
-            // Layer 4 removed for performance - radial gradients are expensive on TV
         }
         
         HomeHeroLayer(
@@ -685,10 +663,11 @@ private fun HeroSection(
         key(item.id) {
             val currentItem = item
             Column {
-                // Get actual genre names from genre IDs
-                val genreMap = if (currentItem.mediaType == MediaType.TV) tvGenres else movieGenres
-                val genreNames = currentItem.genreIds.mapNotNull { genreMap[it] }.take(2)
-                val genreText = genreNames.joinToString(" / ")
+                // Get actual genre names from genre IDs (memoized to avoid list allocations per recomposition)
+                val genreText = remember(currentItem.id, currentItem.genreIds) {
+                    val genreMap = if (currentItem.mediaType == MediaType.TV) tvGenres else movieGenres
+                    currentItem.genreIds.mapNotNull { genreMap[it] }.take(2).joinToString(" / ")
+                }
                 val displayDate = currentItem.releaseDate?.takeIf { it.isNotEmpty() } ?: currentItem.year
                 val hasDuration = currentItem.duration.isNotEmpty() && currentItem.duration != "0m"
                 val hasGenre = genreText.isNotEmpty()

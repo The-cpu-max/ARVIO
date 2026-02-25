@@ -63,6 +63,27 @@ Note: If you mean **DTX**, ARVIO supports **DTS-family audio formats** (DTS/DTS-
 ### Direct Download
 [Download APK](https://github.com/ProdigyV21/ARVIO/releases/latest) from the Releases page.
 
+## Star History
+
+<p align="center">
+  <a href="https://www.star-history.com/#ProdigyV21/ARVIO&Date">
+    <picture>
+      <source
+        media="(prefers-color-scheme: dark)"
+        srcset="https://api.star-history.com/svg?repos=ProdigyV21/ARVIO&type=Date&theme=dark"
+      />
+      <source
+        media="(prefers-color-scheme: light)"
+        srcset="https://api.star-history.com/svg?repos=ProdigyV21/ARVIO&type=Date"
+      />
+      <img
+        alt="Star History Chart"
+        src="https://api.star-history.com/svg?repos=ProdigyV21/ARVIO&type=Date"
+      />
+    </picture>
+  </a>
+</p>
+
 ## Support
 
 If ARVIO helps you, donations are always appreciated:

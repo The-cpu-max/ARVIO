@@ -59,6 +59,8 @@ data class SettingsUiState(
     val cardLayoutMode: String = CARD_LAYOUT_MODE_LANDSCAPE,
     val frameRateMatchingMode: String = "Off",
     val autoPlayNext: Boolean = true,
+    val autoPlaySingleSource: Boolean = true,
+    val autoPlayMinQuality: String = "Any",
     val includeSpecials: Boolean = false,
     val isLoggedIn: Boolean = false,
     val accountEmail: String? = null,
@@ -121,6 +123,8 @@ class SettingsViewModel @Inject constructor(
         val cardLayoutMode: String = CARD_LAYOUT_MODE_LANDSCAPE,
         val frameRateMatchingMode: String = "Off",
         val autoPlayNext: Boolean = true,
+        val autoPlaySingleSource: Boolean = true,
+        val autoPlayMinQuality: String = "Any",
         val includeSpecials: Boolean = false
     )
 
@@ -138,6 +142,10 @@ class SettingsViewModel @Inject constructor(
     private fun frameRateMatchingModeKeyFor(profileId: String) = profileManager.profileStringKeyFor(profileId, "frame_rate_matching_mode")
     private fun autoPlayNextKey() = profileManager.profileBooleanKey("auto_play_next")
     private fun autoPlayNextKeyFor(profileId: String) = profileManager.profileBooleanKeyFor(profileId, "auto_play_next")
+    private fun autoPlaySingleSourceKey() = profileManager.profileBooleanKey("auto_play_single_source")
+    private fun autoPlaySingleSourceKeyFor(profileId: String) = profileManager.profileBooleanKeyFor(profileId, "auto_play_single_source")
+    private fun autoPlayMinQualityKey() = profileManager.profileStringKey("auto_play_min_quality")
+    private fun autoPlayMinQualityKeyFor(profileId: String) = profileManager.profileStringKeyFor(profileId, "auto_play_min_quality")
     private fun includeSpecialsKey() = profileManager.profileBooleanKey("include_specials")
     private fun includeSpecialsKeyFor(profileId: String) = profileManager.profileBooleanKeyFor(profileId, "include_specials")
     private val gson = Gson()
@@ -183,6 +191,8 @@ class SettingsViewModel @Inject constructor(
             val cardLayoutMode = normalizeCardLayoutMode(prefs[cardLayoutModeKey()])
             val frameRateMode = normalizeFrameRateMode(prefs[frameRateMatchingModeKey()])
             var autoPlay = prefs[autoPlayNextKey()] ?: true
+            val autoPlaySingleSource = prefs[autoPlaySingleSourceKey()] ?: true
+            val autoPlayMinQuality = normalizeAutoPlayMinQuality(prefs[autoPlayMinQualityKey()])
             val includeSpecials = prefs[includeSpecialsKey()] ?: false
 
             // Try to load from cloud profile (takes priority if user is logged in)
@@ -228,6 +238,8 @@ class SettingsViewModel @Inject constructor(
                 cardLayoutMode = cardLayoutMode,
                 frameRateMatchingMode = frameRateMode,
                 autoPlayNext = autoPlay,
+                autoPlaySingleSource = autoPlaySingleSource,
+                autoPlayMinQuality = autoPlayMinQuality,
                 includeSpecials = includeSpecials,
                 isLoggedIn = isLoggedIn,
                 accountEmail = accountEmail,
@@ -561,6 +573,38 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setAutoPlaySingleSource(enabled: Boolean) {
+        viewModelScope.launch {
+            context.settingsDataStore.edit { prefs ->
+                prefs[autoPlaySingleSourceKey()] = enabled
+            }
+            _uiState.value = _uiState.value.copy(autoPlaySingleSource = enabled)
+            syncLocalStateToCloud(silent = true)
+        }
+    }
+
+    fun cycleAutoPlayMinQuality() {
+        val current = normalizeAutoPlayMinQuality(_uiState.value.autoPlayMinQuality)
+        val next = when (current) {
+            "Any" -> "720p"
+            "720p" -> "1080p"
+            "1080p" -> "4K"
+            else -> "Any"
+        }
+        setAutoPlayMinQuality(next)
+    }
+
+    private fun setAutoPlayMinQuality(value: String) {
+        val normalized = normalizeAutoPlayMinQuality(value)
+        viewModelScope.launch {
+            context.settingsDataStore.edit { prefs ->
+                prefs[autoPlayMinQualityKey()] = normalized
+            }
+            _uiState.value = _uiState.value.copy(autoPlayMinQuality = normalized)
+            syncLocalStateToCloud(silent = true)
+        }
+    }
+
     fun toggleCardLayoutMode() {
         val next = if (_uiState.value.cardLayoutMode.equals("Poster", ignoreCase = true)) {
             CARD_LAYOUT_MODE_LANDSCAPE
@@ -608,6 +652,16 @@ class SettingsViewModel @Inject constructor(
             "seamless", "seamless only", "only if seamless", "only_if_seamless" -> "Seamless only"
             "always" -> "Always"
             else -> "Off"
+        }
+    }
+
+    private fun normalizeAutoPlayMinQuality(raw: String?): String {
+        return when (raw?.trim()?.lowercase()) {
+            "any" -> "Any"
+            "720p", "hd" -> "720p"
+            "1080p", "fullhd", "fhd" -> "1080p"
+            "4k", "2160p", "uhd" -> "4K"
+            else -> "Any"
         }
     }
 
@@ -1226,6 +1280,10 @@ class SettingsViewModel @Inject constructor(
                             prefs[frameRateMatchingModeKeyFor(profile.id)] ?: "Off"
                         ),
                         autoPlayNext = prefs[autoPlayNextKeyFor(profile.id)] ?: true,
+                        autoPlaySingleSource = prefs[autoPlaySingleSourceKeyFor(profile.id)] ?: true,
+                        autoPlayMinQuality = normalizeAutoPlayMinQuality(
+                            prefs[autoPlayMinQualityKeyFor(profile.id)] ?: "Any"
+                        ),
                         includeSpecials = prefs[includeSpecialsKeyFor(profile.id)] ?: false
                     )
                 )
@@ -1238,6 +1296,8 @@ class SettingsViewModel @Inject constructor(
         root.put("cardLayoutMode", normalizeCardLayoutMode(prefs[cardLayoutModeKey()] ?: _uiState.value.cardLayoutMode))
         root.put("frameRateMatchingMode", prefs[frameRateMatchingModeKey()] ?: _uiState.value.frameRateMatchingMode)
         root.put("autoPlayNext", prefs[autoPlayNextKey()] ?: _uiState.value.autoPlayNext)
+        root.put("autoPlaySingleSource", prefs[autoPlaySingleSourceKey()] ?: _uiState.value.autoPlaySingleSource)
+        root.put("autoPlayMinQuality", normalizeAutoPlayMinQuality(prefs[autoPlayMinQualityKey()] ?: _uiState.value.autoPlayMinQuality))
         root.put("includeSpecials", prefs[includeSpecialsKey()] ?: _uiState.value.includeSpecials)
         root.put("activeProfileId", profileRepository.getActiveProfileId() ?: JSONObject.NULL)
         root.put("profiles", JSONArray(gson.toJson(profiles)))
@@ -1349,6 +1409,8 @@ class SettingsViewModel @Inject constructor(
             val fallbackCardLayoutMode = normalizeCardLayoutMode(root.optString("cardLayoutMode", _uiState.value.cardLayoutMode))
             val fallbackFrameRateMatchingMode = normalizeFrameRateMode(root.optString("frameRateMatchingMode", _uiState.value.frameRateMatchingMode))
             val fallbackAutoPlayNext = root.optBoolean("autoPlayNext", _uiState.value.autoPlayNext)
+            val fallbackAutoPlaySingleSource = root.optBoolean("autoPlaySingleSource", _uiState.value.autoPlaySingleSource)
+            val fallbackAutoPlayMinQuality = normalizeAutoPlayMinQuality(root.optString("autoPlayMinQuality", _uiState.value.autoPlayMinQuality))
             val fallbackIncludeSpecials = root.optBoolean("includeSpecials", _uiState.value.includeSpecials)
 
             root.optJSONArray("profiles")?.toString()?.takeIf { it.isNotBlank() }?.let { json ->
@@ -1373,6 +1435,8 @@ class SettingsViewModel @Inject constructor(
                             prefs[cardLayoutModeKeyFor(profileId)] = normalizeCardLayoutMode(state.cardLayoutMode)
                             prefs[frameRateMatchingModeKeyFor(profileId)] = normalizeFrameRateMode(state.frameRateMatchingMode)
                             prefs[autoPlayNextKeyFor(profileId)] = state.autoPlayNext
+                            prefs[autoPlaySingleSourceKeyFor(profileId)] = state.autoPlaySingleSource
+                            prefs[autoPlayMinQualityKeyFor(profileId)] = normalizeAutoPlayMinQuality(state.autoPlayMinQuality)
                             prefs[includeSpecialsKeyFor(profileId)] = state.includeSpecials
                         }
                     }
@@ -1384,6 +1448,8 @@ class SettingsViewModel @Inject constructor(
                     prefs[cardLayoutModeKeyFor(activeProfileId)] = fallbackCardLayoutMode
                     prefs[frameRateMatchingModeKeyFor(activeProfileId)] = fallbackFrameRateMatchingMode
                     prefs[autoPlayNextKeyFor(activeProfileId)] = fallbackAutoPlayNext
+                    prefs[autoPlaySingleSourceKeyFor(activeProfileId)] = fallbackAutoPlaySingleSource
+                    prefs[autoPlayMinQualityKeyFor(activeProfileId)] = fallbackAutoPlayMinQuality
                     prefs[includeSpecialsKeyFor(activeProfileId)] = fallbackIncludeSpecials
                 }
             }

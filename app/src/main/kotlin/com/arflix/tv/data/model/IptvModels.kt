@@ -12,7 +12,8 @@ data class IptvChannel(
     val group: String,
     val logo: String? = null,
     val epgId: String? = null,
-    val rawTitle: String = name
+    val rawTitle: String = name,
+    val xtreamStreamId: Int? = null
 )
 
 /**
@@ -22,7 +23,8 @@ data class IptvNowNext(
     val now: IptvProgram? = null,
     val next: IptvProgram? = null,
     val later: IptvProgram? = null,
-    val upcoming: List<IptvProgram> = emptyList()
+    val upcoming: List<IptvProgram> = emptyList(),
+    val recent: List<IptvProgram> = emptyList()  // Programs that ended within the past ~60-90 min
 )
 
 /**

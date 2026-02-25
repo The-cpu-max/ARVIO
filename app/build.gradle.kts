@@ -119,6 +119,13 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        // Compose stability configuration - marks domain models as stable to prevent
+        // unnecessary recompositions. Requires Compose compiler 1.5.4+.
+        freeCompilerArgs += listOf(
+            "-P",
+            "plugin:androidx.compose.compiler.plugins.kotlin:stabilityConfigurationPath=" +
+                "${project.projectDir.absolutePath}/compose_stability_config.conf"
+        )
     }
 
     buildFeatures {
@@ -169,8 +176,9 @@ dependencies {
     implementation("androidx.compose.animation:animation")
 
     // Compose for TV - Core TV components
-    implementation("androidx.tv:tv-foundation:1.0.0-alpha10")
-    implementation("androidx.tv:tv-material:1.0.0-alpha10")
+    // tv-foundation stays alpha (no beta/stable releases exist); tv-material bumped to stable
+    implementation("androidx.tv:tv-foundation:1.0.0-alpha11")
+    implementation("androidx.tv:tv-material:1.0.0")
 
     // Navigation
     implementation("androidx.navigation:navigation-compose:2.7.6")

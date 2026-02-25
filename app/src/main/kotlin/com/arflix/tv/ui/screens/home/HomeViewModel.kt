@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -295,11 +296,38 @@ class HomeViewModel @Inject constructor(
     }
 
     init {
+        // Instantly show Continue Watching from disk cache before anything else loads.
+        viewModelScope.launch {
+            try {
+                val cached = traktRepository.preloadContinueWatchingCache()
+                if (cached.isNotEmpty()) {
+                    val merged = mergeContinueWatchingResumeData(cached)
+                    val cwCategory = Category(
+                        id = "continue_watching",
+                        title = "Continue Watching",
+                        items = merged.map { it.toMediaItem() }
+                    )
+                    cwCategory.items.forEach { mediaRepository.cacheItem(it) }
+                    lastContinueWatchingItems = cwCategory.items
+                    lastContinueWatchingUpdateMs = SystemClock.elapsedRealtime()
+                    val updated = _uiState.value.categories.toMutableList()
+                    val idx = updated.indexOfFirst { it.id == "continue_watching" }
+                    if (idx >= 0) updated[idx] = cwCategory else updated.add(0, cwCategory)
+                    _uiState.value = _uiState.value.copy(categories = updated)
+                }
+            } catch (e: Exception) {
+                System.err.println("HomeVM: preload CW cache failed: ${e.message}")
+            }
+        }
         loadHomeData()
         viewModelScope.launch {
-            // Ensure Continue Watching appears once Trakt tokens are loaded
-            traktRepository.isAuthenticated.filter { it }.first()
-            refreshContinueWatchingOnly()
+            try {
+                // Ensure Continue Watching appears once Trakt tokens are loaded
+                traktRepository.isAuthenticated.filter { it }.first()
+                refreshContinueWatchingOnly()
+            } catch (e: Exception) {
+                System.err.println("HomeVM: auth observer CW refresh failed: ${e.message}")
+            }
         }
         viewModelScope.launch {
             traktSyncService.syncEvents.collect { status ->
@@ -321,6 +349,7 @@ class HomeViewModel @Inject constructor(
                     catalogs.joinToString("|") { "${it.id}:${it.title}:${it.sourceUrl.orEmpty()}" }
                 }
                 .distinctUntilChanged()
+                .drop(1) // Skip first emission (startup) to avoid cancelling the initial loadHomeData
                 .collect {
                     // Apply catalog reorder/add/remove immediately on Home.
                     loadHomeData()
@@ -521,6 +550,17 @@ class HomeViewModel @Inject constructor(
                     lastContinueWatchingItems = continueWatchingCategory.items
                     lastContinueWatchingUpdateMs = SystemClock.elapsedRealtime()
                     categories.add(0, continueWatchingCategory)
+                } else {
+                    // Preserve Continue Watching that refreshContinueWatchingOnly() may have
+                    // already added while we were loading categories. Without this, the
+                    // state overwrite at line below would discard CW data.
+                    val existingCW = _uiState.value.categories.firstOrNull {
+                        it.id == "continue_watching" && it.items.isNotEmpty() &&
+                            it.items.none { item -> item.isPlaceholder }
+                    }
+                    if (existingCW != null) {
+                        categories.add(0, existingCW)
+                    }
                 }
 
                 val heroItem = categories.firstOrNull()?.items?.firstOrNull()
@@ -588,27 +628,40 @@ class HomeViewModel @Inject constructor(
                         loadContinueWatchingFromHistory()
                     }
 
-                    val freshContinueWatching = withTimeoutOrNull(6_000L) {
-                        continueWatchingDeferred.await()
-                    } ?: emptyList()
-                    val historyFallback = if (
-                        freshContinueWatching.isEmpty() &&
-                        cachedContinueWatching.isEmpty()
-                    ) {
-                        historyDeferred.await()
-                    } else {
-                        emptyList()
+                    // Show history as interim data while Trakt loads
+                    // Always run this - don't gate on cachedContinueWatching being empty
+                    run {
+                        val historyFallback = try {
+                            withTimeoutOrNull(4_000L) { historyDeferred.await() } ?: emptyList()
+                        } catch (_: Exception) { emptyList() }
+                        if (historyFallback.isNotEmpty() && !continueWatchingDeferred.isCompleted) {
+                            if (requestId != loadHomeRequestId) return@cw
+                            val mergedHistory = mergeContinueWatchingResumeData(historyFallback)
+                            val historyCW = Category(
+                                id = "continue_watching",
+                                title = "Continue Watching",
+                                items = mergedHistory.map { it.toMediaItem() }
+                            )
+                            historyCW.items.forEach { mediaRepository.cacheItem(it) }
+                            val updated = _uiState.value.categories.toMutableList()
+                            val index = updated.indexOfFirst { it.id == "continue_watching" }
+                            if (index >= 0) updated[index] = historyCW else updated.add(0, historyCW)
+                            _uiState.value = _uiState.value.copy(categories = updated)
+                        }
                     }
 
-                    val resolvedContinueWatching = when {
-                        freshContinueWatching.isNotEmpty() -> freshContinueWatching
-                        historyFallback.isNotEmpty() -> historyFallback
-                        else -> emptyList()
+                    // Wait for Trakt fetch to complete without cancelling it.
+                    // Previous 6s timeout was too aggressive for Trakt-connected profiles
+                    // with many watched shows (50+ progress API calls) and caused data loss.
+                    val freshContinueWatching = try {
+                        continueWatchingDeferred.await()
+                    } catch (_: Exception) {
+                        emptyList()
                     }
                     if (requestId != loadHomeRequestId) return@cw
 
-                    if (resolvedContinueWatching.isNotEmpty()) {
-                        val mergedContinueWatching = mergeContinueWatchingResumeData(resolvedContinueWatching)
+                    if (freshContinueWatching.isNotEmpty()) {
+                        val mergedContinueWatching = mergeContinueWatchingResumeData(freshContinueWatching)
                         val continueWatchingCategory = Category(
                             id = "continue_watching",
                             title = "Continue Watching",
@@ -654,7 +707,11 @@ class HomeViewModel @Inject constructor(
 
             val loadedById = LinkedHashMap<String, Category>()
             fun publishMerged(currentState: HomeUiState) {
-                val continueWatching = currentState.categories.firstOrNull {
+                // Read latest state for Continue Watching to avoid race condition
+                // where refreshContinueWatchingOnly() adds CW between snapshot and write.
+                val continueWatching = _uiState.value.categories.firstOrNull {
+                    it.id == "continue_watching" && it.items.isNotEmpty()
+                } ?: currentState.categories.firstOrNull {
                     it.id == "continue_watching" && it.items.isNotEmpty()
                 }
                 val merged = mutableListOf<Category>()
@@ -902,7 +959,14 @@ class HomeViewModel @Inject constructor(
     }
 
     fun refreshContinueWatchingOnly() {
-        refreshContinueWatchingJob?.cancel()
+        // Don't cancel an in-progress Trakt fetch - restarting a fetch that takes
+        // 10+ seconds (424 watched shows, 41 filtered, 50 progress API calls) wastes
+        // time and causes Continue Watching to never appear. Multiple callers
+        // (ON_RESUME, isAuthenticated observer, sync completion) would keep cancelling
+        // each other's fetches. The throttle mechanism prevents redundant fetches.
+        if (refreshContinueWatchingJob?.isActive == true) {
+            return
+        }
         refreshContinueWatchingJob = viewModelScope.launch {
             try {
                 val now = SystemClock.elapsedRealtime()
@@ -912,11 +976,13 @@ class HomeViewModel @Inject constructor(
                 val hasPlaceholders = existingContinueWatching?.items?.any { it.isPlaceholder } == true
 
                 // Allow refresh if we have placeholders (need to replace them), otherwise throttle
-                if (!hasPlaceholders && now - lastContinueWatchingUpdateMs < CONTINUE_WATCHING_REFRESH_MS) return@launch
+                if (!hasPlaceholders && now - lastContinueWatchingUpdateMs < CONTINUE_WATCHING_REFRESH_MS) {
+                    return@launch
+                }
 
                 val continueWatching = try {
                     traktRepository.getContinueWatching()
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     emptyList()
                 }
                 val cachedContinueWatching = traktRepository.getCachedContinueWatching()
@@ -1056,9 +1122,9 @@ class HomeViewModel @Inject constructor(
 
     private fun refreshWatchedBadges() {
         viewModelScope.launch(networkDispatcher) {
-            val isAuth = traktRepository.isAuthenticated.first()
-            if (!isAuth) return@launch
-
+            try {
+            // Initialize watched cache - works for both Trakt and non-Trakt profiles.
+            // For non-Trakt, it loads from Supabase watched_movies/watched_episodes.
             traktRepository.initializeWatchedCache()
             val categories = _uiState.value.categories
             if (categories.isEmpty()) return@launch
@@ -1120,6 +1186,9 @@ class HomeViewModel @Inject constructor(
                 categories = updatedCategories,
                 heroItem = updatedHero
             )
+            } catch (e: Exception) {
+                System.err.println("HomeVM: refreshWatchedBadges failed: ${e.message}")
+            }
         }
     }
 

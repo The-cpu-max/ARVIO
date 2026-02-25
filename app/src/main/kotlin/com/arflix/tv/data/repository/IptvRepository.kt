@@ -95,6 +95,7 @@ class IptvRepository @Inject constructor(
 ) {
     private val gson = Gson()
     private val loadMutex = Mutex()
+    private val epgRefreshMutex = Mutex()
     private val xtreamDataMutex = Mutex()
     private val xtreamSeriesEpisodeCacheMutex = Mutex()
     private val xtreamSeriesEpisodeInFlightMutex = Mutex()
@@ -114,6 +115,8 @@ class IptvRepository @Inject constructor(
 
     @Volatile
     private var preferredDerivedEpgUrl: String? = null
+    @Volatile
+    private var discoveredM3uEpgUrl: String? = null
     @Volatile
     private var cacheOwnerProfileId: String? = null
     @Volatile
@@ -148,15 +151,17 @@ class IptvRepository @Inject constructor(
     private val staleAfterMs = 24 * 60 * 60_000L
     private val playlistCacheMs = staleAfterMs
     private val epgCacheMs = staleAfterMs
-    private val epgEmptyRetryMs = 3 * 60_000L
+    private val epgEmptyRetryMs = 30_000L
+    /** EPG background refresh threshold: only re-fetch EPG when older than 15 minutes */
+    private val epgBackgroundRefreshMs = 15 * 60_000L
     private val xtreamVodCacheMs = 6 * 60 * 60_000L
     private val iptvHttpClient: OkHttpClient by lazy {
-        // Used for full playlist/EPG loading - can be longer but reasonable
+        // Used for full playlist/EPG loading – generous timeouts for large Xtream EPG feeds.
         okHttpClient.newBuilder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(25, TimeUnit.SECONDS)
-            .writeTimeout(12, TimeUnit.SECONDS)
-            .callTimeout(35, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .callTimeout(90, TimeUnit.SECONDS)
             .build()
     }
     private val xtreamLookupHttpClient: OkHttpClient by lazy {
@@ -571,39 +576,103 @@ class IptvRepository @Inject constructor(
                     (!cachedHasPrograms && now - cachedEpgAt < epgEmptyRetryMs)
                 )
             var epgFailureMessage: String? = null
-            val nowNext = if (epgCandidates.isEmpty()) {
+
+            // Check if this is an Xtream provider (can use fast short EPG API)
+            val xtreamCreds = resolveXtreamCredentials(config.epgUrl)
+                ?: resolveXtreamCredentials(config.m3uUrl)
+            val hasXtreamChannels = channels.any { it.xtreamStreamId != null || it.id.startsWith("xtream:") }
+            System.err.println("[EPG] loadSnapshot: forceEpgReload=$forceEpgReload shouldUseCachedEpg=$shouldUseCachedEpg cachedHasPrograms=$cachedHasPrograms xtreamCreds=${xtreamCreds != null} hasXtreamChannels=$hasXtreamChannels epgCandidates=${epgCandidates.size}")
+            val nowNext = if (epgCandidates.isEmpty() && xtreamCreds == null) {
                 onProgress(IptvLoadProgress("No EPG URL configured", 90))
+                System.err.println("[EPG] No EPG URL and no Xtream creds - skipping EPG")
                 emptyMap()
             } else if (shouldUseCachedEpg) {
                 onProgress(IptvLoadProgress("Using cached EPG", 92))
+                System.err.println("[EPG] Using cached EPG (${cachedNowNext.size} channels, age=${(now - cachedEpgAt)/1000}s)")
                 cachedNowNext
             } else {
                 var resolvedNowNext: Map<String, IptvNowNext> = emptyMap()
                 var resolved = false
-                // Keep startup fast: try only top candidates and fail over quickly.
-                val epgCandidatesToTry = epgCandidates.take(2)
-                epgCandidatesToTry.forEachIndexed { index, epgUrl ->
-                    if (resolved) return@forEachIndexed
-                    val pct = (90 + ((index * 8) / epgCandidatesToTry.size.coerceAtLeast(1))).coerceIn(90, 98)
-                    onProgress(IptvLoadProgress("Loading EPG (${index + 1}/${epgCandidatesToTry.size})...", pct))
-                    val attempt = runCatching {
-                        withTimeoutOrNull(8_000L) { fetchAndParseEpg(epgUrl, channels) } ?: emptyMap()
-                    }
-                    if (attempt.isSuccess) {
-                        val parsed = attempt.getOrDefault(emptyMap())
-                        val parsedHasPrograms = hasAnyProgramData(parsed)
-                        if (parsedHasPrograms || index == epgCandidatesToTry.lastIndex) {
-                            resolvedNowNext = parsed
-                            cachedNowNext = parsed
-                            cachedEpgAt = System.currentTimeMillis()
-                            epgUpdated = true
-                            preferredDerivedEpgUrl = epgUrl
-                            resolved = true
+
+                // Collect EPG from multiple sources and merge them all.
+                // Short EPG and XMLTV now run in PARALLEL for much faster loading.
+                // Overall timeout of 90s prevents indefinite waiting.
+                val epgDeadline = withTimeoutOrNull(90_000L) { coroutineScope {
+                    var shortEpgResult: Map<String, IptvNowNext>? = null
+
+                    // Launch both paths concurrently
+                    val shortEpgDeferred = if (xtreamCreds != null && hasXtreamChannels) {
+                        async(Dispatchers.IO) {
+                            System.err.println("[EPG] Attempting Xtream short EPG (baseUrl=${xtreamCreds.baseUrl})")
+                            runCatching { fetchXtreamShortEpg(xtreamCreds, channels, onProgress) }.getOrNull()
                         }
+                    } else null
+
+                    val xmltvDeferred = if (epgCandidates.isNotEmpty()) {
+                        async(Dispatchers.IO) {
+                            // Try only the first 2 candidates (avoid 6 x 90s sequential timeout)
+                            val candidatesToTry = epgCandidates.take(2)
+                            var result: Map<String, IptvNowNext>? = null
+                            for ((index, epgUrl) in candidatesToTry.withIndex()) {
+                                if (result != null) break
+                                val pct = (90 + ((index * 8) / candidatesToTry.size.coerceAtLeast(1))).coerceIn(90, 98)
+                                onProgress(IptvLoadProgress("Loading full EPG (${index + 1}/${candidatesToTry.size})...", pct))
+                                val attempt = runCatching {
+                                    withTimeoutOrNull(60_000L) { fetchAndParseEpg(epgUrl, channels) }
+                                }
+                                val parsed = attempt.getOrNull()
+                                if (parsed != null && hasAnyProgramData(parsed)) {
+                                    preferredDerivedEpgUrl = epgUrl
+                                    result = parsed
+                                } else {
+                                    val msg = attempt.exceptionOrNull()?.message ?: "empty/timeout"
+                                    epgFailureMessage = msg
+                                    System.err.println("[EPG] XMLTV attempt ${index + 1} failed: $msg")
+                                }
+                            }
+                            result
+                        }
+                    } else null
+
+                    // Await short EPG first (faster)
+                    val shortEpgParsed = shortEpgDeferred?.await()
+                    val shortHasData = shortEpgParsed != null && hasAnyProgramData(shortEpgParsed)
+                    if (shortHasData) {
+                        shortEpgResult = shortEpgParsed
+                        System.err.println("[EPG] Xtream short EPG SUCCESS: ${shortEpgParsed!!.size} channels")
+                        // Provide immediate results while XMLTV might still be loading
+                        val merged = cachedNowNext.toMutableMap()
+                        merged.putAll(shortEpgParsed)
+                        resolvedNowNext = merged
+                        cachedNowNext = merged
+                        cachedEpgAt = System.currentTimeMillis()
+                        epgUpdated = true
+                        resolved = true
                     } else {
-                        epgFailureMessage = attempt.exceptionOrNull()?.message
+                        System.err.println("[EPG] Xtream short EPG: no data or not available")
                     }
+
+                    // Always await XMLTV – it provides the full schedule with future program blocks
+                    // that the short EPG (now/next only) doesn't have.
+                    val xmltvParsed = xmltvDeferred?.let { runCatching { it.await() }.getOrNull() }
+                    if (xmltvParsed != null && hasAnyProgramData(xmltvParsed)) {
+                        // Field-level merge: XMLTV provides full schedule (later/upcoming/recent),
+                        // short EPG provides fresher now/next. Merge at field level, not channel level.
+                        val merged = mergeEpgSources(xmltv = xmltvParsed, shortEpg = shortEpgResult)
+                        resolvedNowNext = merged
+                        cachedNowNext = merged
+                        cachedEpgAt = System.currentTimeMillis()
+                        epgUpdated = true
+                        resolved = true
+                        System.err.println("[EPG] XMLTV SUCCESS: ${xmltvParsed.size} from XMLTV + ${shortEpgResult?.size ?: 0} from short EPG = ${merged.size} total")
+                    }
+                } }
+
+                if (epgDeadline == null) {
+                    System.err.println("[EPG] Overall EPG loading timed out after 90s")
+                    epgFailureMessage = "EPG loading timed out"
                 }
+
                 if (!resolved) {
                     // Throttle repeated failures to avoid refetching every open.
                     cachedNowNext = emptyMap()
@@ -728,11 +797,172 @@ class IptvRepository @Inject constructor(
         return ageMs > staleAfterMs
     }
 
+    /**
+     * Returns true if EPG data is old enough to warrant a background refresh.
+     * Uses a shorter threshold (15 min) than the full staleness check (24h) so that
+     * the EPG guide stays reasonably current without fetching on every screen open.
+     */
+    fun isEpgStaleForBackgroundRefresh(): Boolean {
+        val epgAge = System.currentTimeMillis() - cachedEpgAt
+        return cachedEpgAt == 0L || epgAge > epgBackgroundRefreshMs
+    }
+
+    /**
+     * Lightweight EPG-only refresh that does NOT hold the heavy [loadMutex].
+     * Uses its own [epgRefreshMutex] so it won't block channel reads or snapshot loads.
+     * [onEpgSnapshot] is called progressively when short EPG completes (quick, ~76 channels)
+     * and again when XMLTV completes (all channels with full schedule).
+     * Returns the final updated snapshot, or null if nothing changed.
+     */
+    suspend fun refreshEpgOnly(
+        onProgress: (IptvLoadProgress) -> Unit = {},
+        onEpgSnapshot: (IptvSnapshot) -> Unit = {}
+    ): IptvSnapshot? {
+        // Skip if already refreshing EPG
+        if (!epgRefreshMutex.tryLock()) {
+            System.err.println("[EPG] refreshEpgOnly: already in progress, skipping")
+            return null
+        }
+        try {
+            return withContext(Dispatchers.IO) {
+                val config = observeConfig().first()
+                if (config.m3uUrl.isBlank()) return@withContext null
+
+                val channels = cachedChannels
+                if (channels.isEmpty()) return@withContext null
+
+                val epgCandidates = resolveEpgCandidates(config)
+                val xtreamCreds = resolveXtreamCredentials(config.epgUrl)
+                    ?: resolveXtreamCredentials(config.m3uUrl)
+                val hasXtreamChannels = channels.any { it.xtreamStreamId != null || it.id.startsWith("xtream:") }
+
+                System.err.println("[EPG] refreshEpgOnly: starting lightweight EPG refresh (cachedEpgAge=${(System.currentTimeMillis() - cachedEpgAt)/1000}s)")
+
+                if (epgCandidates.isEmpty() && xtreamCreds == null) {
+                    System.err.println("[EPG] refreshEpgOnly: no EPG sources available")
+                    return@withContext null
+                }
+
+                var resolvedNowNext: Map<String, IptvNowNext> = emptyMap()
+                var resolved = false
+                var epgUpdated = false
+
+                // Helper to build a snapshot from current state for progressive UI updates
+                suspend fun buildSnapshot(epgData: Map<String, IptvNowNext>): IptvSnapshot {
+                    val favGroups = observeFavoriteGroups().first()
+                    val favChannels = observeFavoriteChannels().first()
+                    val grouped = channels.groupBy { it.group.ifBlank { "Uncategorized" } }
+                        .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+                    val loadedMs = if (cachedPlaylistAt > 0L) cachedPlaylistAt else System.currentTimeMillis()
+                    return IptvSnapshot(
+                        channels = channels,
+                        grouped = grouped,
+                        nowNext = epgData,
+                        favoriteGroups = favGroups,
+                        favoriteChannels = favChannels,
+                        epgWarning = null,
+                        loadedAt = Instant.ofEpochMilli(loadedMs)
+                    )
+                }
+
+                val epgDeadline = withTimeoutOrNull(90_000L) { coroutineScope {
+                    var shortEpgResult: Map<String, IptvNowNext>? = null
+
+                    val shortEpgDeferred = if (xtreamCreds != null && hasXtreamChannels) {
+                        async(Dispatchers.IO) {
+                            runCatching { fetchXtreamShortEpg(xtreamCreds, channels, onProgress) }.getOrNull()
+                        }
+                    } else null
+
+                    // Launch XMLTV in parallel – it provides full schedule with future program blocks
+                    // that short EPG (now/next only) doesn't have.
+                    val xmltvDeferred = if (epgCandidates.isNotEmpty()) {
+                        async(Dispatchers.IO) {
+                            val candidatesToTry = epgCandidates.take(2)
+                            var result: Map<String, IptvNowNext>? = null
+                            for ((index, epgUrl) in candidatesToTry.withIndex()) {
+                                if (result != null) break
+                                val pct = (90 + ((index * 8) / candidatesToTry.size.coerceAtLeast(1))).coerceIn(90, 98)
+                                onProgress(IptvLoadProgress("Loading full EPG (${index + 1}/${candidatesToTry.size})...", pct))
+                                val attempt = runCatching {
+                                    withTimeoutOrNull(60_000L) { fetchAndParseEpg(epgUrl, channels) }
+                                }
+                                val parsed = attempt.getOrNull()
+                                if (parsed != null && hasAnyProgramData(parsed)) {
+                                    preferredDerivedEpgUrl = epgUrl
+                                    result = parsed
+                                }
+                            }
+                            result
+                        }
+                    } else null
+
+                    val shortEpgParsed = shortEpgDeferred?.await()
+                    val shortHasData = shortEpgParsed != null && hasAnyProgramData(shortEpgParsed)
+                    if (shortHasData) {
+                        shortEpgResult = shortEpgParsed
+                        // Provide immediate now/next while XMLTV loads the full schedule
+                        val merged = cachedNowNext.toMutableMap()
+                        merged.putAll(shortEpgParsed!!)
+                        resolvedNowNext = merged
+                        cachedNowNext = merged
+                        cachedEpgAt = System.currentTimeMillis()
+                        epgUpdated = true
+                        resolved = true
+                        System.err.println("[EPG] refreshEpgOnly: short EPG success (${shortEpgParsed.size} channels)")
+                        // Progressive update: push short EPG results to UI immediately
+                        runCatching { onEpgSnapshot(buildSnapshot(merged)) }
+                    }
+
+                    // Always await XMLTV for full schedule data
+                    val xmltvParsed = xmltvDeferred?.let { runCatching { it.await() }.getOrNull() }
+                    if (xmltvParsed != null && hasAnyProgramData(xmltvParsed)) {
+                        // Field-level merge: XMLTV full schedule + short EPG fresh now/next
+                        val merged = mergeEpgSources(xmltv = xmltvParsed, shortEpg = shortEpgResult)
+                        resolvedNowNext = merged
+                        cachedNowNext = merged
+                        cachedEpgAt = System.currentTimeMillis()
+                        epgUpdated = true
+                        resolved = true
+                        System.err.println("[EPG] refreshEpgOnly: XMLTV merged (${xmltvParsed.size} XMLTV + ${shortEpgResult?.size ?: 0} short EPG = ${merged.size} total)")
+                    }
+                } }
+
+                if (epgDeadline == null) {
+                    System.err.println("[EPG] refreshEpgOnly: timed out after 90s")
+                }
+
+                if (!resolved) {
+                    System.err.println("[EPG] refreshEpgOnly: no new EPG data obtained")
+                    return@withContext null
+                }
+
+                // Write updated cache to disk without holding loadMutex
+                if (epgUpdated) {
+                    runCatching {
+                        writeCache(
+                            config = config,
+                            channels = channels,
+                            nowNext = resolvedNowNext,
+                            loadedAtMs = System.currentTimeMillis()
+                        )
+                    }
+                }
+
+                // Return final snapshot with all EPG data
+                buildSnapshot(resolvedNowNext)
+            }
+        } finally {
+            epgRefreshMutex.unlock()
+        }
+    }
+
     fun invalidateCache() {
         cachedChannels = emptyList()
         cachedNowNext = emptyMap()
         cachedPlaylistAt = 0L
         cachedEpgAt = 0L
+        discoveredM3uEpgUrl = null
         xtreamVodCacheKey = null
         xtreamVodLoadedAtMs = 0L
         xtreamSeriesLoadedAtMs = 0L
@@ -1021,6 +1251,18 @@ class IptvRepository @Inject constructor(
             loadCatalog(providerKey, creds, allowNetwork = true, forceRefresh = true)
         }
 
+        /**
+         * Warm the catalog into memory without force-refreshing.
+         * Uses persisted catalog if fresh, network only if stale or missing.
+         * Much lighter than [refreshCatalog] which always re-downloads + re-indexes.
+         */
+        suspend fun warmCatalog(
+            providerKey: String,
+            creds: XtreamCredentials
+        ) {
+            loadCatalog(providerKey, creds, allowNetwork = true, forceRefresh = false)
+        }
+
         suspend fun prefetchSeriesInfo(
             providerKey: String,
             creds: XtreamCredentials,
@@ -1074,13 +1316,16 @@ class IptvRepository @Inject constructor(
             val normalizedShow = normalizeLookupText(showTitle)
             val normalizedTmdb = normalizeTmdbId(tmdbId)
             val normalizedImdb = normalizeImdbId(imdbId)
+            System.err.println("[VOD-TV] resolveEpisode: show=$showTitle norm=$normalizedShow tmdb=$normalizedTmdb imdb=$normalizedImdb S${season}E${episode} net=$allowNetwork")
             if (normalizedShow.isBlank() && normalizedTmdb.isNullOrBlank() && normalizedImdb.isNullOrBlank()) {
+                System.err.println("[VOD-TV] resolveEpisode: all identifiers blank -> null")
                 return null
             }
 
             val cacheKey = buildResolvedCacheKey(providerKey, normalizedTmdb, normalizedImdb, normalizedShow, season, episode)
             readResolved(cacheKey)?.let { cached ->
                 if (System.currentTimeMillis() - cached.savedAtMs < resolvedTtlMs) {
+                    System.err.println("[VOD-TV] resolveEpisode: CACHE HIT (resolved, method=${cached.method}, streamId=${cached.streamId})")
                     return cached
                 }
             }
@@ -1092,14 +1337,17 @@ class IptvRepository @Inject constructor(
                 normalizedShow = normalizedShow
             )
             readSeriesBinding(bindingKeys)?.let { boundSeriesId ->
+                System.err.println("[VOD-TV] resolveEpisode: series binding found -> seriesId=$boundSeriesId")
                 val boundEpisodes = loadSeriesInfo(
                     providerKey = providerKey,
                     creds = creds,
                     seriesId = boundSeriesId,
                     allowNetwork = allowNetwork
                 )
+                System.err.println("[VOD-TV] resolveEpisode: binding episodes loaded: ${boundEpisodes.size}")
                 val boundHit = matchEpisode(boundEpisodes, season, episode)
                 if (boundHit != null) {
+                    System.err.println("[VOD-TV] resolveEpisode: BINDING HIT (streamId=${boundHit.episode.id})")
                     val resolved = ResolverCachedResolvedEpisode(
                         streamId = boundHit.episode.id,
                         containerExtension = boundHit.episode.containerExtension,
@@ -1112,13 +1360,23 @@ class IptvRepository @Inject constructor(
                     writeSeriesBinding(bindingKeys, boundSeriesId)
                     return resolved
                 }
+                System.err.println("[VOD-TV] resolveEpisode: binding miss for S${season}E${episode}")
             }
 
+            val catalogStart = System.currentTimeMillis()
             val catalog = loadCatalog(providerKey, creds, allowNetwork = allowNetwork, forceRefresh = false)
-            if (catalog.entries.isEmpty()) return null
+            System.err.println("[VOD-TV] resolveEpisode: catalog loaded in ${System.currentTimeMillis() - catalogStart}ms, entries=${catalog.entries.size}")
+            if (catalog.entries.isEmpty()) {
+                System.err.println("[VOD-TV] resolveEpisode: catalog EMPTY -> null")
+                return null
+            }
 
             val candidates = buildCandidates(catalog, normalizedShow, normalizedTmdb, normalizedImdb, year)
-            if (candidates.isEmpty()) return null
+            System.err.println("[VOD-TV] resolveEpisode: candidates=${candidates.size}${if (candidates.isNotEmpty()) " top=${candidates.first().method}(${candidates.first().entry.name})" else ""}")
+            if (candidates.isEmpty()) {
+                System.err.println("[VOD-TV] resolveEpisode: no candidates -> null")
+                return null
+            }
             val probeList = if (
                 candidates.first().method == "tmdb_id" ||
                 candidates.first().method == "imdb_id" ||
@@ -1129,15 +1387,19 @@ class IptvRepository @Inject constructor(
                 candidates.take(2)
             }
 
+            System.err.println("[VOD-TV] resolveEpisode: probing ${probeList.size} candidates for S${season}E${episode}")
             val hits = coroutineScope {
                 probeList.map { candidate ->
                     async {
                         val episodes = loadSeriesInfo(providerKey, creds, candidate.entry.seriesId, allowNetwork)
-                        val hit = matchEpisode(episodes, season, episode) ?: return@async null
+                        val hit = matchEpisode(episodes, season, episode)
+                        System.err.println("[VOD-TV] resolveEpisode: probe seriesId=${candidate.entry.seriesId} (${candidate.entry.name}): ${episodes.size} eps, match=${hit != null}")
+                        if (hit == null) return@async null
                         Triple(candidate, hit.episode, hit.score)
                     }
                 }.awaitAll().filterNotNull()
             }
+            System.err.println("[VOD-TV] resolveEpisode: ${hits.size} hits from ${probeList.size} probes")
             if (hits.isEmpty()) return null
 
             val best = hits.maxByOrNull { it.first.confidence * 1000f + it.third } ?: return null
@@ -1380,7 +1642,10 @@ class IptvRepository @Inject constructor(
             val key = "$providerKey|$seriesId"
             synchronized(seriesInfoLock) {
                 val cached = seriesInfoMemory[key]
-                if (!cached.isNullOrEmpty()) return cached
+                if (!cached.isNullOrEmpty()) {
+                    System.err.println("[VOD-TV] loadSeriesInfo(seriesId=$seriesId): memory cache HIT (${cached.size} episodes)")
+                    return cached
+                }
             }
             val persisted = runCatching {
                 gson.fromJson(
@@ -1392,14 +1657,18 @@ class IptvRepository @Inject constructor(
                 persisted.episodes.isNotEmpty() &&
                 System.currentTimeMillis() - persisted.savedAtMs < seriesInfoTtlMs
             ) {
+                System.err.println("[VOD-TV] loadSeriesInfo(seriesId=$seriesId): disk cache HIT (${persisted.episodes.size} episodes)")
                 synchronized(seriesInfoLock) {
                     seriesInfoMemory[key] = persisted.episodes
                 }
                 return persisted.episodes
             }
+            System.err.println("[VOD-TV] loadSeriesInfo(seriesId=$seriesId): NETWORK fetch (allowNetwork=$allowNetwork)")
+            val fetchStart = System.currentTimeMillis()
             val episodes = withTimeoutOrNull(5_000L) {
                 getXtreamSeriesEpisodes(creds, seriesId, allowNetwork = allowNetwork, fast = true)
             }.orEmpty()
+            System.err.println("[VOD-TV] loadSeriesInfo(seriesId=$seriesId): fetched ${episodes.size} episodes in ${System.currentTimeMillis() - fetchStart}ms")
             if (episodes.isNotEmpty()) {
                 synchronized(seriesInfoLock) {
                     seriesInfoMemory[key] = episodes
@@ -1426,15 +1695,22 @@ class IptvRepository @Inject constructor(
         ): ResolverEpisodeHit? {
             if (episodes.isEmpty()) return null
 
+            // Log season distribution for debugging
+            val seasonDist = episodes.groupBy { it.season }.mapValues { it.value.size }
+            System.err.println("[VOD-TV] matchEpisode: looking for S${requestedSeason}E${requestedEpisode} in ${episodes.size} eps, seasons=$seasonDist")
+
             // Exact season/episode is the only high-confidence match.
             episodes.firstOrNull { it.season == requestedSeason && it.episode == requestedEpisode }?.let {
+                System.err.println("[VOD-TV] matchEpisode: EXACT MATCH S${it.season}E${it.episode} id=${it.id}")
                 return ResolverEpisodeHit(it, score = 1000)
             }
 
             // If provider clearly has the requested season, do not cross-match to another season.
             if (episodes.any { it.season == requestedSeason }) {
+                System.err.println("[VOD-TV] matchEpisode: season $requestedSeason EXISTS but episode $requestedEpisode NOT FOUND")
                 return null
             }
+            System.err.println("[VOD-TV] matchEpisode: season $requestedSeason NOT in provider data")
 
             // Flattened providers sometimes expose all episodes as season 1 (or 0).
             // Allow this only when there is a single unambiguous episode-number match.
@@ -1644,20 +1920,25 @@ class IptvRepository @Inject constructor(
         allowNetwork: Boolean = true
     ): StreamSource? {
         return withContext(Dispatchers.IO) {
+            System.err.println("[VOD-TV] findEpisodeVodSource: title=$title S${season}E${episode} imdb=$imdbId tmdb=$tmdbId net=$allowNetwork")
             val creds = resolveXtreamCredentials(observeConfig().first().m3uUrl)
             if (creds == null) {
+                System.err.println("[VOD-TV] findEpisodeVodSource: NO Xtream credentials from M3U URL")
                 return@withContext null
             }
+            System.err.println("[VOD-TV] findEpisodeVodSource: Xtream creds OK (baseUrl=${creds.baseUrl})")
             val normalizedTitle = normalizeLookupText(title)
             val normalizedImdb = normalizeImdbId(imdbId)
             val normalizedTmdb = normalizeTmdbId(tmdbId)
             if (normalizedTitle.isBlank() && normalizedImdb.isNullOrBlank() && normalizedTmdb.isNullOrBlank()) {
+                System.err.println("[VOD-TV] findEpisodeVodSource: all identifiers blank - skipping")
                 return@withContext null
             }
             val activeProfileId = runCatching { profileManager.activeProfileId.first() }.getOrDefault("default")
             val providerKey = "$activeProfileId|${xtreamCacheKey(creds)}"
 
-            seriesResolver.resolveEpisode(
+            val resolverStart = System.currentTimeMillis()
+            val resolved = seriesResolver.resolveEpisode(
                 providerKey = providerKey,
                 creds = creds,
                 showTitle = title,
@@ -1667,7 +1948,9 @@ class IptvRepository @Inject constructor(
                 imdbId = imdbId,
                 year = parseYear(title),
                 allowNetwork = allowNetwork
-            )?.let { resolved ->
+            )
+            System.err.println("[VOD-TV] seriesResolver.resolveEpisode took ${System.currentTimeMillis() - resolverStart}ms -> ${if (resolved != null) "HIT(streamId=${resolved.streamId})" else "MISS"}")
+            if (resolved != null) {
                 val ext = resolved.containerExtension?.trim()?.ifBlank { null } ?: "mp4"
                 val streamUrl = "${creds.baseUrl}/series/${creds.username}/${creds.password}/${resolved.streamId}.$ext"
                 return@withContext StreamSource(
@@ -1754,7 +2037,9 @@ class IptvRepository @Inject constructor(
                 loadXtreamSeriesList(creds)
                 val activeProfileId = runCatching { profileManager.activeProfileId.first() }.getOrDefault("default")
                 val providerKey = "$activeProfileId|${xtreamCacheKey(creds)}"
-                seriesResolver.refreshCatalog(providerKey, creds)
+                // Use non-forced warmup: reads from persisted catalog if fresh, network only if stale.
+                // Avoids re-downloading + re-indexing 40k+ entries on every profile selection.
+                seriesResolver.warmCatalog(providerKey, creds)
             }
         }
     }
@@ -2339,6 +2624,7 @@ class IptvRepository @Inject constructor(
 
         return buildList {
             manual?.let { add(it) }
+            discoveredM3uEpgUrl?.let { add(it) }
             addAll(derived)
         }.distinct()
     }
@@ -2380,7 +2666,8 @@ class IptvRepository @Inject constructor(
                 group = group,
                 logo = stream.streamIcon?.takeIf { it.isNotBlank() },
                 epgId = stream.epgChannelId?.trim()?.takeIf { it.isNotBlank() },
-                rawTitle = name
+                rawTitle = name,
+                xtreamStreamId = streamId
             )
         }
     }
@@ -2469,42 +2756,317 @@ class IptvRepository @Inject constructor(
                 throw IllegalStateException("EPG request failed (HTTP ${safeResponse.code}). $detail")
             }
 
-            // Spool once to disk so we can retry parsing with sanitization without
-            // re-downloading a very large EPG payload.
-            val tmpFile = File.createTempFile("epg_", ".xml", context.cacheDir)
-            runCatching {
-                prepared.use { input ->
-                    BufferedOutputStream(tmpFile.outputStream()).use { output ->
-                        input.copyTo(output, DEFAULT_BUFFER_SIZE)
+            // Try streaming parse first (avoids disk I/O for the common case).
+            // Only spool to disk and retry if the stream parse fails.
+            try {
+                val sanitized = BackslashEscapeSanitizingInputStream(prepared)
+                return parseXmlTvNowNext(BufferedInputStream(sanitized), channels)
+            } catch (streamError: Exception) {
+                // Streaming parse failed – the network stream is consumed, so we
+                // cannot retry from it.  Check if we got a useful partial result
+                // or need to re-download.  Re-download and spool to disk for retries.
+                val tmpFile = File.createTempFile("epg_", ".xml", context.cacheDir)
+                try {
+                    // Re-download
+                    val retryResponse = iptvHttpClient.newCall(
+                        epgRequest(url, "VLC/3.0.20 LibVLC/3.0.20")
+                    ).execute()
+                    retryResponse.use { rr ->
+                        val retryStream = rr.body?.byteStream()
+                            ?: throw IllegalStateException("Empty EPG retry response")
+                        BufferedInputStream(prepareInputStream(retryStream, url)).use { input ->
+                            BufferedOutputStream(tmpFile.outputStream()).use { output ->
+                                input.copyTo(output, DEFAULT_BUFFER_SIZE)
+                            }
+                        }
                     }
+
+                    try {
+                        return FileInputStream(tmpFile).use { input ->
+                            parseXmlTvNowNext(BufferedInputStream(input), channels)
+                        }
+                    } catch (_: Exception) {
+                        // Final fallback: SAX parser (different engine).
+                        return FileInputStream(tmpFile).use { input ->
+                            val sanitized2 = BackslashEscapeSanitizingInputStream(BufferedInputStream(input))
+                            parseXmlTvNowNextWithSax(BufferedInputStream(sanitized2), channels)
+                        }
+                    }
+                } finally {
+                    tmpFile.delete()
+                    cleanupStaleEpgTempFiles(maxAgeMs = 60_000L)
                 }
-            }.getOrElse {
-                tmpFile.delete()
-                throw it
+            }
+        }
+    }
+
+    // ── Xtream Short EPG (instant loading) ─────────────────────────────
+
+    /**
+     * Data class for a single EPG listing returned by the Xtream short EPG APIs.
+     * Fields like `title` and `description` are base64-encoded by the server.
+     */
+    private data class XtreamEpgListing(
+        val id: String? = null,
+        @SerializedName("epg_id") val epgId: String? = null,
+        val title: String? = null,
+        val lang: String? = null,
+        val start: String? = null,
+        val end: String? = null,
+        val description: String? = null,
+        @SerializedName("channel_id") val channelId: String? = null,
+        @SerializedName("start_timestamp") val startTimestamp: String? = null,
+        @SerializedName("stop_timestamp") val stopTimestamp: String? = null,
+        @SerializedName("stream_id") val streamId: String? = null
+    )
+
+    private data class XtreamEpgResponse(
+        @SerializedName("epg_listings") val epgListings: List<XtreamEpgListing>? = null
+    )
+
+    /**
+     * Decode a base64-encoded string from the Xtream short EPG API.
+     * Returns the decoded text or the original string if decoding fails.
+     */
+    private fun decodeBase64Field(encoded: String?): String {
+        if (encoded.isNullOrBlank()) return ""
+        return try {
+            String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8).trim()
+        } catch (_: Exception) {
+            encoded.trim()  // Not base64; return raw
+        }
+    }
+
+    /**
+     * Fetch EPG data using the Xtream Codes `get_simple_data_table` API.
+     * This returns current/next program data for ALL channels in one lightweight
+     * JSON response, instead of downloading a 20-150+ MB XMLTV XML file.
+     *
+     * Returns null if the API is not supported or fails (caller should fall back to XMLTV).
+     */
+    /**
+     * Extract the Xtream stream ID from an IptvChannel.
+     * Uses the explicit field if set, otherwise parses from the "xtream:123" id format.
+     */
+    private fun resolveXtreamStreamId(ch: IptvChannel): Int? {
+        ch.xtreamStreamId?.let { return it }
+        if (ch.id.startsWith("xtream:")) {
+            return ch.id.removePrefix("xtream:").toIntOrNull()
+        }
+        return null
+    }
+
+    private fun fetchXtreamShortEpg(
+        creds: XtreamCredentials,
+        channels: List<IptvChannel>,
+        onProgress: (IptvLoadProgress) -> Unit
+    ): Map<String, IptvNowNext>? {
+        if (channels.isEmpty()) return null
+
+        // Build lookups: epgId -> channelIds, streamId -> channelIds
+        val epgIdToChannelIds = mutableMapOf<String, MutableList<String>>()
+        val streamIdToChannelIds = mutableMapOf<String, MutableList<String>>()
+        for (ch in channels) {
+            ch.epgId?.let { eid ->
+                epgIdToChannelIds.getOrPut(eid) { mutableListOf() }.add(ch.id)
+            }
+            resolveXtreamStreamId(ch)?.let { sid ->
+                streamIdToChannelIds.getOrPut(sid.toString()) { mutableListOf() }.add(ch.id)
+            }
+        }
+
+        onProgress(IptvLoadProgress("Loading EPG (fast Xtream API)...", 90))
+
+        // Prioritize: favorite channels first, then favorite groups, then rest.
+        // Deduplicate stream IDs so we don't fetch the same channel twice.
+        val xtreamChannels = channels.filter { resolveXtreamStreamId(it) != null }
+        val favoriteChannelIds = runCatching { kotlinx.coroutines.runBlocking { observeFavoriteChannels().first() } }
+            .getOrDefault(emptyList()).toSet()
+        val favoriteGroupNames = runCatching { kotlinx.coroutines.runBlocking { observeFavoriteGroups().first() } }
+            .getOrDefault(emptyList()).toSet()
+
+        val favChannels = xtreamChannels.filter { it.id in favoriteChannelIds }
+        val favGroupChannels = xtreamChannels.filter { it.id !in favoriteChannelIds && it.group in favoriteGroupNames }
+        val alreadyPrioritized = (favChannels.map { it.id } + favGroupChannels.map { it.id }).toSet()
+        val rest = xtreamChannels.filter { it.id !in alreadyPrioritized }
+        val prioritized = favChannels + favGroupChannels + rest
+
+        val toFetch = prioritized.take(500)
+        System.err.println("[EPG] Xtream short EPG: fetching ${toFetch.size}/${xtreamChannels.size} channels (favorites first)")
+        if (toFetch.isEmpty()) return null
+
+        // Parallel fetch using a thread pool (40 concurrent connections for speed)
+        val allListings = java.util.Collections.synchronizedList(mutableListOf<XtreamEpgListing>())
+        val errorCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val fetchedCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val total = toFetch.size
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(40)
+        val futures = mutableListOf<java.util.concurrent.Future<*>>()
+
+        val sampleLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+        for (ch in toFetch) {
+            val sid = resolveXtreamStreamId(ch) ?: continue
+            futures.add(executor.submit {
+                val url = "${creds.baseUrl}/player_api.php?username=${creds.username}" +
+                    "&password=${creds.password}&action=get_short_epg&stream_id=$sid&limit=5"
+                try {
+                    val resp: XtreamEpgResponse? = requestJson(url, XtreamEpgResponse::class.java)
+                    val listings = resp?.epgListings
+                    if (listings != null) {
+                        allListings.addAll(listings)
+                        // Log first successful response for debugging
+                        if (listings.isNotEmpty() && sampleLogged.compareAndSet(false, true)) {
+                            val sample = listings.first()
+                            System.err.println("[EPG] Sample response for stream_id=$sid: channelId=${sample.channelId} epgId=${sample.epgId} streamId=${sample.streamId} start=${sample.start} startTs=${sample.startTimestamp} title=${sample.title?.take(40)}")
+                        }
+                    }
+                } catch (_: Exception) { errorCount.incrementAndGet() }
+                val done = fetchedCount.incrementAndGet()
+                if (done % 50 == 0) {
+                    val pct = (90 + ((done.toLong() * 8L) / total.toLong())).toInt().coerceIn(90, 98)
+                    onProgress(IptvLoadProgress("Loading EPG... $done/$total channels", pct))
+                }
+            })
+        }
+
+        // Wait for all to complete (with timeout - 30s max)
+        try {
+            executor.shutdown()
+            executor.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {
+            executor.shutdownNow()
+        }
+
+        val errors = errorCount.get()
+        val fetched = fetchedCount.get()
+        System.err.println("[EPG] Xtream short EPG done: ${allListings.size} listings, $fetched fetched, $errors errors")
+
+        if (errors > fetched / 2 && fetched > 20) {
+            return null
+        }
+        if (allListings.isEmpty()) return null
+
+        onProgress(IptvLoadProgress("Parsing EPG data (${allListings.size} listings)...", 98))
+        return buildNowNextFromXtreamListings(allListings, epgIdToChannelIds, streamIdToChannelIds)
+    }
+
+
+
+    /**
+     * Build IptvNowNext map from Xtream EPG listings.
+     * Groups listings by channel, sorts by start time, assigns now/next/later/upcoming.
+     */
+    private fun buildNowNextFromXtreamListings(
+        listings: List<XtreamEpgListing>,
+        epgIdToChannelIds: Map<String, List<String>>,
+        streamIdToChannelIds: Map<String, List<String>>
+    ): Map<String, IptvNowNext> {
+        val nowMs = System.currentTimeMillis()
+        val recentCutoff = nowMs - (15L * 60_000L) // 15 min ago
+
+        // Group listings by channel.
+        // Try matching by: epg_id (channelId field), then stream_id.
+        data class ChannelPrograms(val programs: MutableList<IptvProgram> = mutableListOf())
+        val channelProgramsMap = mutableMapOf<String, ChannelPrograms>()
+
+        for (listing in listings) {
+            val startMs = listing.startTimestamp?.toLongOrNull()?.let { it * 1000L }
+                ?: parseXtreamDateTime(listing.start)
+                ?: continue
+            val stopMs = listing.stopTimestamp?.toLongOrNull()?.let { it * 1000L }
+                ?: parseXtreamDateTime(listing.end)
+                ?: continue
+
+            // Skip programs that ended well before now (keep recent ones)
+            if (stopMs < recentCutoff) continue
+
+            val title = decodeBase64Field(listing.title).ifBlank { "No Title" }
+            val description = decodeBase64Field(listing.description).takeIf { it.isNotBlank() }
+
+            val program = IptvProgram(
+                title = title,
+                description = description,
+                startUtcMillis = startMs,
+                endUtcMillis = stopMs
+            )
+
+            // Resolve which IptvChannel IDs this listing maps to
+            val resolvedChannelIds = mutableSetOf<String>()
+
+            // Match by epg_id / channel_id field
+            listing.channelId?.let { cid ->
+                epgIdToChannelIds[cid]?.let { resolvedChannelIds.addAll(it) }
+            }
+            listing.epgId?.let { eid ->
+                // epg_id can be the stream_id in some providers
+                streamIdToChannelIds[eid]?.let { resolvedChannelIds.addAll(it) }
+                epgIdToChannelIds[eid]?.let { resolvedChannelIds.addAll(it) }
+            }
+            // Match by stream_id
+            listing.streamId?.let { sid ->
+                streamIdToChannelIds[sid]?.let { resolvedChannelIds.addAll(it) }
             }
 
-            try {
-                return FileInputStream(tmpFile).use { input ->
-                    val sanitized = BackslashEscapeSanitizingInputStream(BufferedInputStream(input))
-                    parseXmlTvNowNext(BufferedInputStream(sanitized), channels)
-                }
-            } catch (firstError: Exception) {
-                try {
-                    // Retry once without sanitizer in case sanitization changed valid text.
-                    return FileInputStream(tmpFile).use { input ->
-                        parseXmlTvNowNext(BufferedInputStream(input), channels)
-                    }
-                } catch (_: Exception) {
-                    // Final fallback: SAX parser (different engine than XmlPullParser).
-                    return FileInputStream(tmpFile).use { input ->
-                        val sanitized = BackslashEscapeSanitizingInputStream(BufferedInputStream(input))
-                        parseXmlTvNowNextWithSax(BufferedInputStream(sanitized), channels)
-                    }
-                }
-            } finally {
-                tmpFile.delete()
-                cleanupStaleEpgTempFiles(maxAgeMs = 60_000L)
+            for (channelId in resolvedChannelIds) {
+                channelProgramsMap.getOrPut(channelId) { ChannelPrograms() }.programs.add(program)
             }
+        }
+
+        System.err.println("[EPG] buildNowNext: ${listings.size} listings -> ${channelProgramsMap.size} channels mapped (epgIdMap=${epgIdToChannelIds.size}, streamIdMap=${streamIdToChannelIds.size})")
+        if (channelProgramsMap.isEmpty() && listings.isNotEmpty()) {
+            // Log first few listings to debug mapping issues
+            listings.take(3).forEach { l ->
+                System.err.println("[EPG]   sample listing: channelId=${l.channelId} epgId=${l.epgId} streamId=${l.streamId} start=${l.start} startTs=${l.startTimestamp} title=${l.title?.take(30)}")
+            }
+        }
+
+        // Build NowNext from sorted programs
+        val result = mutableMapOf<String, IptvNowNext>()
+        for ((channelId, cp) in channelProgramsMap) {
+            val sorted = cp.programs.sortedBy { it.startUtcMillis }
+            var now: IptvProgram? = null
+            var next: IptvProgram? = null
+            var later: IptvProgram? = null
+            val upcoming = mutableListOf<IptvProgram>()
+            val recent = mutableListOf<IptvProgram>()
+
+            for (p in sorted) {
+                when {
+                    p.endUtcMillis <= nowMs && p.endUtcMillis > recentCutoff -> recent.add(p)
+                    p.isLive(nowMs) -> now = p
+                    p.startUtcMillis > nowMs && next == null -> next = p
+                    p.startUtcMillis > nowMs && later == null -> later = p
+                    p.startUtcMillis > nowMs -> upcoming.add(p)
+                }
+            }
+
+            result[channelId] = IptvNowNext(
+                now = now,
+                next = next,
+                later = later,
+                upcoming = upcoming.take(5),
+                recent = recent
+            )
+        }
+
+        val withNow = result.values.count { it.now != null }
+        val withNext = result.values.count { it.next != null }
+        System.err.println("[EPG] buildNowNext result: ${result.size} channels, $withNow with NOW, $withNext with NEXT")
+        return result
+    }
+
+    /**
+     * Parse Xtream datetime strings like "2024-01-01 12:00:00" to epoch millis.
+     */
+    private fun parseXtreamDateTime(dateStr: String?): Long? {
+        if (dateStr.isNullOrBlank()) return null
+        return try {
+            val formatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+            val local = java.time.LocalDateTime.parse(dateStr, formatter)
+            // Xtream times are typically UTC
+            local.atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -2516,10 +3078,8 @@ class IptvRepository @Inject constructor(
     private class BackslashEscapeSanitizingInputStream(
         input: InputStream
     ) : FilterInputStream(input) {
-        override fun read(): Int {
-            val current = super.read()
-            if (current == -1) return -1
 
+        private fun mapByte(current: Int): Int {
             val mapped = if (current == '\\'.code) {
                 val next = super.read()
                 if (next == -1) {
@@ -2535,21 +3095,38 @@ class IptvRepository @Inject constructor(
                         't' -> '\t'.code
                         'b' -> '\b'.code
                         'f' -> 0x0C
-                        else -> {
-                            // Unknown escape (for example \y): drop the slash and keep the char.
-                            next
-                        }
+                        else -> next // Unknown escape: drop the slash, keep the char
                     }
                 }
             } else {
                 current
             }
-
             // XML 1.0 forbids most control chars; normalize them to space.
-            if (mapped in 0x00..0x1F && mapped != '\n'.code && mapped != '\r'.code && mapped != '\t'.code) {
-                return ' '.code
+            return if (mapped in 0x00..0x1F && mapped != '\n'.code && mapped != '\r'.code && mapped != '\t'.code) {
+                ' '.code
+            } else {
+                mapped
             }
-            return mapped
+        }
+
+        override fun read(): Int {
+            val current = super.read()
+            if (current == -1) return -1
+            return mapByte(current)
+        }
+
+        // Bulk read override: avoids per-byte method call overhead from BufferedInputStream.
+        // For a 94 MB file this eliminates ~98 million individual read() calls.
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (len == 0) return 0
+            var count = 0
+            while (count < len) {
+                val current = super.read()
+                if (current == -1) break
+                b[off + count] = mapByte(current).toByte()
+                count++
+            }
+            return if (count == 0) -1 else count
         }
     }
 
@@ -2565,6 +3142,16 @@ class IptvRepository @Inject constructor(
             lines.forEach { rawLine ->
                 val line = rawLine.trim()
                 if (line.isEmpty()) return@forEach
+
+                if (line.startsWith("#EXTM3U", ignoreCase = true)) {
+                    // Extract EPG URL from M3U header: #EXTM3U url-tvg="..." or x-tvg-url="..."
+                    val tvgUrl = extractAttr(line, "url-tvg")
+                        ?: extractAttr(line, "x-tvg-url")
+                    if (!tvgUrl.isNullOrBlank() && tvgUrl.startsWith("http", ignoreCase = true)) {
+                        discoveredM3uEpgUrl = tvgUrl
+                    }
+                    return@forEach
+                }
 
                 if (line.startsWith("#EXTINF", ignoreCase = true)) {
                     pendingMetadata = line
@@ -2608,29 +3195,25 @@ class IptvRepository @Inject constructor(
     ): Map<String, IptvNowNext> {
         if (channels.isEmpty()) return emptyMap()
 
-        val keyLookup = buildChannelKeyLookup(channels)
-
         val nowUtc = System.currentTimeMillis()
+        val recentCutoff = nowUtc - (15 * 60_000L)  // Keep programs that ended within past 15 min
+        val keyLookup = buildChannelKeyLookup(channels)
+        val xmlChannelNameMap = mutableMapOf<String, MutableSet<String>>()
         val nowCandidates = mutableMapOf<String, IptvProgram?>()
         val upcomingCandidates = mutableMapOf<String, MutableList<IptvProgram>>()
-        val xmlChannelNameMap = mutableMapOf<String, MutableSet<String>>()
+        val recentCandidates = mutableMapOf<String, MutableList<IptvProgram>>()
 
-        val parser = XmlPullParserFactory.newInstance().newPullParser().apply {
-            // Some IPTV XMLTV feeds are malformed. Relaxed mode keeps parsing instead of failing hard.
-            runCatching { setFeature("http://xmlpull.org/v1/doc/features.html#relaxed", true) }
-            // Avoid docdecl/DTD edge cases in provider feeds.
-            runCatching { setFeature("http://xmlpull.org/v1/doc/features.html#process-docdecl", false) }
-            // Use InputStream so XmlPullParser honors XML encoding declarations.
-            setInput(input, null)
-        }
-
-        var eventType = parser.eventType
+        var currentXmlChannelId: String? = null
         var currentChannelKey: String? = null
         var currentStart = 0L
         var currentStop = 0L
         var currentTitle: String? = null
         var currentDesc: String? = null
-        var currentXmlChannelId: String? = null
+
+        val parser = android.util.Xml.newPullParser()
+        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+        parser.setInput(input, null)
+        var eventType = parser.eventType
 
         while (eventType != XmlPullParser.END_DOCUMENT) {
             when (eventType) {
@@ -2649,11 +3232,18 @@ class IptvRepository @Inject constructor(
                             }
                         }
                         "programme" -> {
-                            currentChannelKey = normalizeChannelKey(parser.getAttributeValue(null, "channel") ?: "")
-                            currentStart = parseXmlTvDate(parser.getAttributeValue(null, "start"))
-                            currentStop = parseXmlTvDate(parser.getAttributeValue(null, "stop"))
-                            currentTitle = null
-                            currentDesc = null
+                            val rawKey = normalizeChannelKey(parser.getAttributeValue(null, "channel") ?: "")
+                            val stop = parseXmlTvDate(parser.getAttributeValue(null, "stop"))
+                            // Skip programmes that ended before the recent cutoff
+                            if (stop > 0L && stop <= recentCutoff) {
+                                currentChannelKey = null
+                            } else {
+                                currentChannelKey = rawKey
+                                currentStart = parseXmlTvDate(parser.getAttributeValue(null, "start"))
+                                currentStop = stop
+                                currentTitle = null
+                                currentDesc = null
+                            }
                         }
                         "title" -> {
                             if (currentChannelKey != null) {
@@ -2688,6 +3278,9 @@ class IptvRepository @Inject constructor(
                             if (program.startUtcMillis > nowUtc) {
                                 val future = upcomingCandidates.getOrPut(channel.id) { mutableListOf() }
                                 addUpcomingCandidate(future, program, limit = 8)
+                            } else if (program.endUtcMillis <= nowUtc && program.endUtcMillis > recentCutoff) {
+                                val recent = recentCandidates.getOrPut(channel.id) { mutableListOf() }
+                                if (recent.size < 6) recent.add(program)
                             }
                         }
                         currentChannelKey = null
@@ -2700,11 +3293,13 @@ class IptvRepository @Inject constructor(
 
         return channels.associate { channel ->
             val future = upcomingCandidates[channel.id].orEmpty()
+            val recent = recentCandidates[channel.id].orEmpty().sortedBy { it.startUtcMillis }
             channel.id to IptvNowNext(
                 now = nowCandidates[channel.id],
                 next = future.getOrNull(0),
                 later = future.getOrNull(1),
-                upcoming = future
+                upcoming = future,
+                recent = recent
             )
         }
     }
@@ -2719,7 +3314,9 @@ class IptvRepository @Inject constructor(
         val xmlChannelNameMap = mutableMapOf<String, MutableSet<String>>()
         val nowCandidates = mutableMapOf<String, IptvProgram?>()
         val upcomingCandidates = mutableMapOf<String, MutableList<IptvProgram>>()
+        val recentCandidates = mutableMapOf<String, MutableList<IptvProgram>>()
         val nowUtc = System.currentTimeMillis()
+        val recentCutoff = nowUtc - (15 * 60_000L)  // Keep programs that ended within past 15 min
 
         val factory = SAXParserFactory.newInstance().apply {
             isNamespaceAware = false
@@ -2829,6 +3426,10 @@ class IptvRepository @Inject constructor(
                             if (program.startUtcMillis > nowUtc) {
                                 val future = upcomingCandidates.getOrPut(channel.id) { mutableListOf() }
                                 addUpcomingCandidate(future, program, limit = 8)
+                            } else if (program.endUtcMillis <= nowUtc && program.endUtcMillis > recentCutoff) {
+                                // Recently ended program – keep for the past-window in the EPG guide
+                                val recent = recentCandidates.getOrPut(channel.id) { mutableListOf() }
+                                if (recent.size < 6) recent.add(program)
                             }
                         }
                         currentChannelKey = null
@@ -2843,15 +3444,18 @@ class IptvRepository @Inject constructor(
 
         parser.parse(input, handler)
 
-        return channels.associate { channel ->
+        val result = channels.associate { channel ->
             val future = upcomingCandidates[channel.id].orEmpty()
+            val recent = recentCandidates[channel.id].orEmpty().sortedBy { it.startUtcMillis }
             channel.id to IptvNowNext(
                 now = nowCandidates[channel.id],
                 next = future.getOrNull(0),
                 later = future.getOrNull(1),
-                upcoming = future
+                upcoming = future,
+                recent = recent
             )
         }
+        return result
     }
 
     private fun pickNow(existing: IptvProgram?, candidate: IptvProgram, nowUtcMillis: Long): IptvProgram? {
@@ -2891,6 +3495,38 @@ class IptvRepository @Inject constructor(
         return nowNext.values.any { item ->
             item.now != null || item.next != null || item.later != null || item.upcoming.isNotEmpty()
         }
+    }
+
+    /**
+     * Merges XMLTV (full schedule) with short EPG (fresh now/next) at the field level.
+     * Short EPG provides more accurate now/next (live data), while XMLTV provides the
+     * full timeline (later, upcoming, recent) that short EPG doesn't have.
+     */
+    private fun mergeEpgSources(
+        xmltv: Map<String, IptvNowNext>,
+        shortEpg: Map<String, IptvNowNext>?
+    ): Map<String, IptvNowNext> {
+        if (shortEpg.isNullOrEmpty()) return xmltv
+        if (xmltv.isEmpty()) return shortEpg
+
+        val merged = xmltv.toMutableMap()
+        for ((channelId, shortEntry) in shortEpg) {
+            val xmltvEntry = merged[channelId]
+            if (xmltvEntry == null) {
+                // Channel only in short EPG, use as-is
+                merged[channelId] = shortEntry
+            } else {
+                // Merge: prefer short EPG's now/next (fresher), keep XMLTV's later/upcoming/recent
+                merged[channelId] = IptvNowNext(
+                    now = shortEntry.now ?: xmltvEntry.now,
+                    next = shortEntry.next ?: xmltvEntry.next,
+                    later = xmltvEntry.later ?: shortEntry.later,
+                    upcoming = xmltvEntry.upcoming.ifEmpty { shortEntry.upcoming },
+                    recent = xmltvEntry.recent.ifEmpty { shortEntry.recent }
+                )
+            }
+        }
+        return merged
     }
 
     private fun parseXmlTvDate(rawValue: String?): Long {
@@ -3121,18 +3757,21 @@ class IptvRepository @Inject constructor(
     ) {
         runCatching {
             val compactChannels = channels.map { channel ->
-                // Keep cache lean: avoid storing huge logos/raw EXTINF metadata in persisted payload.
+                // Keep cache lean: strip raw EXTINF metadata but preserve logos for cold-start display.
                 channel.copy(
-                    logo = null,
                     rawTitle = channel.name
                 )
             }
+            // Keep later + upcoming + recent so the EPG timeline shows full schedule on cold start.
+            // Strip descriptions to keep cache lean, but preserve title + times.
             val compactNowNext = nowNext.mapValues { (_, value) ->
+                fun IptvProgram.compact() = IptvProgram(title, null, startUtcMillis, endUtcMillis)
                 IptvNowNext(
-                    now = value.now?.let { IptvProgram(it.title, null, it.startUtcMillis, it.endUtcMillis) },
-                    next = value.next?.let { IptvProgram(it.title, null, it.startUtcMillis, it.endUtcMillis) },
-                    later = null,
-                    upcoming = emptyList()
+                    now = value.now?.compact(),
+                    next = value.next?.compact(),
+                    later = value.later?.compact(),
+                    upcoming = value.upcoming.map { it.compact() },
+                    recent = value.recent.map { it.compact() }
                 )
             }
             val payload = IptvCachePayload(

@@ -312,16 +312,16 @@ class PlayerViewModel @Inject constructor(
                         fetchSkipIntervals(imdbId, seasonNumber, episodeNumber)
                     }
                 }
-                // Start VOD append in background - single fast attempt, no retries blocking UI
+                // Start VOD append in background - supplementary, cache should already be warm
+                // from DetailsViewModel prefetch. Short timeout; don't block on slow lookups.
                 vodAppendJob?.cancel()
                 vodAppendJob = launch {
-                    // Single attempt with reasonable timeout - VOD is supplementary, not critical
                     appendVodSourceInBackground(
                         mediaType = mediaType,
                         imdbId = imdbId,
                         seasonNumber = seasonNumber,
                         episodeNumber = episodeNumber,
-                        timeoutMs = 2_500L
+                        timeoutMs = 3_500L
                     )
                 }
 
@@ -944,21 +944,25 @@ class PlayerViewModel @Inject constructor(
             }
 
             if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
-                val reachableSelection = findFirstReachableStreamInAddon(stream)
-                if (reachableSelection == null) {
-                    _uiState.value = _uiState.value.copy(
-                        error = "Source is unreachable right now. Try again or pick another source."
-                    )
-                    return@launch
-                }
-                selectedOriginal = reachableSelection.original
-                resolvedStream = reachableSelection.resolved
-                url = resolvedStream.url
-                if (url.isNullOrBlank()) {
-                    _uiState.value = _uiState.value.copy(
-                        error = "Failed to resolve source URL."
-                    )
-                    return@launch
+                // Skip reachability check for debrid CDN URLs - they are freshly resolved,
+                // time-limited, and the HEAD request wastes time / can consume single-use URLs.
+                if (!isKnownDebridCdnUrl(url)) {
+                    val reachableSelection = findFirstReachableStreamInAddon(stream)
+                    if (reachableSelection == null) {
+                        _uiState.value = _uiState.value.copy(
+                            error = "Source is unreachable right now. Try again or pick another source."
+                        )
+                        return@launch
+                    }
+                    selectedOriginal = reachableSelection.original
+                    resolvedStream = reachableSelection.resolved
+                    url = resolvedStream.url
+                    if (url.isNullOrBlank()) {
+                        _uiState.value = _uiState.value.copy(
+                            error = "Failed to resolve source URL."
+                        )
+                        return@launch
+                    }
                 }
             }
 
@@ -1073,6 +1077,16 @@ class PlayerViewModel @Inject constructor(
             }
         }
         return null
+    }
+
+    /**
+     * Returns true if the URL points to a known debrid CDN domain.
+     * These URLs are freshly resolved and time-limited, so reachability checks
+     * are wasteful and can consume single-use download tokens.
+     */
+    private fun isKnownDebridCdnUrl(url: String): Boolean {
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return DEBRID_CDN_DOMAINS.any { domain -> host == domain || host.endsWith(".$domain") }
     }
 
     fun reportPlaybackError(message: String) {
@@ -1570,6 +1584,31 @@ class PlayerViewModel @Inject constructor(
             .substringBefore('?')
             .trim()
             .lowercase()
+    }
+
+    companion object {
+        /** Known debrid service CDN domains. Reachability checks are skipped for these. */
+        private val DEBRID_CDN_DOMAINS = setOf(
+            // Real-Debrid
+            "real-debrid.com",
+            "rdb.so",
+            "rdeb.io",
+            // AllDebrid
+            "alldebrid.com",
+            "alldebrid.fr",
+            // Premiumize
+            "premiumize.me",
+            // Debrid-Link
+            "debrid-link.com",
+            "debrid-link.fr",
+            "dl.debrid-link.com",
+            // TorBox
+            "torbox.app",
+            // EasyDebrid
+            "easydebrid.com",
+            // Offcloud
+            "offcloud.com",
+        )
     }
 }
 

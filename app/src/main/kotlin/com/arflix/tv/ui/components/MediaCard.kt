@@ -54,6 +54,18 @@ import androidx.compose.ui.zIndex
  * - No layout size changes on focus (no width/height scaling)
  * - Uses `ArvioSkin` for consistent styling
  */
+
+// Shared gradient overlay for all cards - avoids per-card Brush allocation.
+// Uses pre-computed ARGB values for BackgroundDark (0x0D0D14).
+private val sharedCardOverlayBrush = Brush.verticalGradient(
+    colors = listOf(
+        Color.Transparent,
+        Color.Transparent,
+        Color(0x8C_0D0D14),  // ~55% alpha
+        Color(0xD9_0D0D14),  // ~85% alpha
+    )
+)
+
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun MediaCard(
@@ -96,17 +108,7 @@ fun MediaCard(
 
     val context = LocalContext.current
     val density = LocalDensity.current
-    val backgroundColor = ArvioSkin.colors.background
-    val overlayBrush = remember(backgroundColor) {
-        Brush.verticalGradient(
-            colors = listOf(
-                Color.Transparent,
-                Color.Transparent,
-                backgroundColor.copy(alpha = 0.55f),
-                backgroundColor.copy(alpha = 0.85f),
-            )
-        )
-    }
+    val overlayBrush = sharedCardOverlayBrush
     // Performance: Removed context/density from keys - they're stable CompositionLocals
     val imageRequest = remember(imageUrl, width, aspectRatio) {
         val widthPx = with(density) { width.roundToPx() }
@@ -116,7 +118,7 @@ fun MediaCard(
             .size(widthPx, heightPx)
             .precision(Precision.INEXACT)
             .allowHardware(true)
-            .crossfade(150)  // Faster transition for TV
+            .crossfade(false)  // No crossfade: avoids 2x overdraw per card during scroll
             .build()
     }
     // Performance: Removed context/density from keys
@@ -358,7 +360,7 @@ fun PosterCard(
             .size(widthPx, heightPx)
             .precision(Precision.INEXACT)
             .allowHardware(true)
-            .crossfade(150)  // Faster transition for TV
+            .crossfade(false)  // No crossfade: avoids 2x overdraw per card during scroll
             .build()
     }
 

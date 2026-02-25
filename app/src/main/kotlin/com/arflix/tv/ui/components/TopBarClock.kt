@@ -18,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -91,20 +92,34 @@ private fun ProfileIndicator(
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Avatar with first letter
+        // Avatar
         Box(
             modifier = Modifier
                 .size(24.dp)
                 .clip(RoundedCornerShape(6.dp))
-                .background(Color(profile.avatarColor)),
+                .background(
+                    if (profile.avatarId > 0) {
+                        val (c1, c2) = AvatarRegistry.gradientColors(profile.avatarId)
+                        Brush.verticalGradient(listOf(c1, c2))
+                    } else {
+                        Brush.linearGradient(listOf(Color(profile.avatarColor), Color(profile.avatarColor)))
+                    }
+                ),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = profile.name.firstOrNull()?.uppercase() ?: "?",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
+            if (profile.avatarId > 0) {
+                AvatarIcon(
+                    avatarId = profile.avatarId,
+                    modifier = Modifier.size(24.dp).padding(2.dp)
+                )
+            } else {
+                Text(
+                    text = profile.name.firstOrNull()?.uppercase() ?: "?",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
         }
 
         Spacer(modifier = Modifier.width(8.dp))
