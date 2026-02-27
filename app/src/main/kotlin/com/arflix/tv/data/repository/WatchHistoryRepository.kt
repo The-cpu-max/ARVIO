@@ -58,6 +58,19 @@ class WatchHistoryRepository @Inject constructor(
     }
 
     /**
+     * In-memory filter that accepts both legacy (source="arvio") and new
+     * (source="profile:{profileId}:*") entries for the current profile.
+     */
+    private fun filterByProfile(entries: List<WatchHistoryEntry>): List<WatchHistoryEntry> {
+        val profileId = profileManager.getProfileIdSync()
+        val prefix = "profile:$profileId:"
+        return entries.filter { entry ->
+            val src = entry.source
+            src == null || src == "arvio" || src.startsWith(prefix)
+        }
+    }
+
+    /**
      * Save watch progress to Supabase
      */
     suspend fun saveProgress(
@@ -121,15 +134,16 @@ class WatchHistoryRepository @Inject constructor(
         val userId = authRepositoryProvider.get().getCurrentUserId() ?: return emptyList()
 
         return try {
-            executeSupabaseCall("get watch history") { auth ->
+            val records = executeSupabaseCall("get watch history") { auth ->
                 supabaseApi.getWatchHistory(
                     auth = auth,
                     userId = "eq.$userId",
-                    source = profileHistorySourceFilter(),
+                    source = null,
                     order = "updated_at.desc",
                     limit = 500
                 )
             }.map { it.toEntry() }
+            filterByProfile(records)
         } catch (_: Exception) {
             emptyList()
         }
@@ -146,13 +160,12 @@ class WatchHistoryRepository @Inject constructor(
                 supabaseApi.getWatchHistory(
                     auth = auth,
                     userId = "eq.$userId",
-                    source = profileHistorySourceFilter(),
+                    source = null,
                     order = "updated_at.desc",
                     limit = 500
                 )
             }
-            records
-                .map { it.toEntry() }
+            filterByProfile(records.map { it.toEntry() })
                 .filter { isEntryInProgress(it) }
         } catch (_: Exception) {
             emptyList()
@@ -177,12 +190,12 @@ class WatchHistoryRepository @Inject constructor(
                     userId = "eq.$userId",
                     showTmdbId = "eq.$tmdbId",
                     mediaType = "eq.${if (mediaType == MediaType.MOVIE) "movie" else "tv"}",
-                    source = profileHistorySourceFilter(),
+                    source = null,
                     season = season?.let { "eq.$it" },
                     episode = episode?.let { "eq.$it" }
                 )
             }
-            records.firstOrNull()?.toEntry()
+            filterByProfile(records.map { it.toEntry() }).firstOrNull()
         } catch (_: Exception) {
             null
         }
@@ -205,13 +218,12 @@ class WatchHistoryRepository @Inject constructor(
                     userId = "eq.$userId",
                     showTmdbId = "eq.$tmdbId",
                     mediaType = "eq.$mediaTypeKey",
-                    source = profileHistorySourceFilter(),
+                    source = null,
                     order = "updated_at.desc",
                     limit = 50
                 )
             }
-            records
-                .map { it.toEntry() }
+            filterByProfile(records.map { it.toEntry() })
                 .filter { isEntryInProgress(it) }
                 .maxByOrNull { entry ->
                     parseEpoch(entry.updated_at).coerceAtLeast(parseEpoch(entry.paused_at))
