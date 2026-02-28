@@ -533,6 +533,24 @@ class HomeViewModel @Inject constructor(
             try {
                 val cached = traktRepository.preloadContinueWatchingCache()
                 if (cached.isNotEmpty()) {
+                    // Set hero item IMMEDIATELY from raw CW data (before the slow
+                    // merge step) so the hero section, clear logo, and overview text
+                    // appear on the very first frame after profile selection.
+                    val rawFirstItem = cached.firstOrNull()?.toMediaItem()
+                    if (rawFirstItem != null && _uiState.value.heroItem == null) {
+                        val heroKey = "${rawFirstItem.mediaType}_${rawFirstItem.id}"
+                        val heroLogo = getCachedLogo(heroKey)
+                        if (heroLogo != null) {
+                            preloadLogoImages(listOf(heroLogo), batchLimit = 1)
+                        }
+                        mediaRepository.cacheItem(rawFirstItem)
+                        _uiState.value = _uiState.value.copy(
+                            heroItem = rawFirstItem,
+                            heroLogoUrl = heroLogo
+                        )
+                    }
+
+                    // Now do the slower merge with local resume data
                     val merged = mergeContinueWatchingResumeData(cached)
                     val cwCategory = Category(
                         id = "continue_watching",
@@ -545,7 +563,9 @@ class HomeViewModel @Inject constructor(
                     val updated = _uiState.value.categories.toMutableList()
                     val idx = updated.indexOfFirst { it.id == "continue_watching" }
                     if (idx >= 0) updated[idx] = cwCategory else updated.add(0, cwCategory)
-                    _uiState.value = _uiState.value.copy(categories = updated)
+                    _uiState.value = _uiState.value.copy(
+                        categories = updated
+                    )
                 }
             } catch (e: Exception) {
                 System.err.println("HomeVM: preload CW cache failed: ${e.message}")
@@ -670,22 +690,30 @@ class HomeViewModel @Inject constructor(
         // Filter out any existing continue_watching from preloaded data
         val filteredCategories = categories.filter { it.id != "continue_watching" }.toMutableList()
 
-        // Show placeholder Continue Watching immediately while real data loads
-        // This gives instant visual feedback that something is loading
-        val placeholderItems = (1..5).map { index ->
-            MediaItem(
-                id = -index, // Negative IDs for placeholders
-                title = "",
-                mediaType = MediaType.MOVIE,
-                isPlaceholder = true
-            )
+        // Preserve real CW data if we already have it (from disk cache preload in init).
+        // Only show placeholders if we have NO real CW items yet.
+        val existingCW = _uiState.value.categories.firstOrNull {
+            it.id == "continue_watching" && it.items.isNotEmpty() &&
+                it.items.none { item -> item.isPlaceholder }
         }
-        val placeholderContinueWatching = Category(
-            id = "continue_watching",
-            title = "Continue Watching",
-            items = placeholderItems
-        )
-        filteredCategories.add(0, placeholderContinueWatching)
+        if (existingCW != null) {
+            filteredCategories.add(0, existingCW)
+        } else {
+            val placeholderItems = (1..5).map { index ->
+                MediaItem(
+                    id = -index, // Negative IDs for placeholders
+                    title = "",
+                    mediaType = MediaType.MOVIE,
+                    isPlaceholder = true
+                )
+            }
+            val placeholderContinueWatching = Category(
+                id = "continue_watching",
+                title = "Continue Watching",
+                items = placeholderItems
+            )
+            filteredCategories.add(0, placeholderContinueWatching)
+        }
 
         // Adjust hero item if it was from continue watching
         val adjustedHeroItem = if (heroItem != null &&
@@ -998,25 +1026,32 @@ class HomeViewModel @Inject constructor(
                         loadContinueWatchingFromHistory()
                     }
 
-                    // Show history as interim data while Trakt loads
-                    // Always run this - don't gate on cachedContinueWatching being empty
+                    // Show history as interim data while Trakt loads, but ONLY if we don't
+                    // already have real CW items (from disk cache). Replacing cached CW with
+                    // history data causes a visible jumble because they have different order.
                     run {
-                        val historyFallback = try {
-                            withTimeoutOrNull(4_000L) { historyDeferred.await() } ?: emptyList()
-                        } catch (_: Exception) { emptyList() }
-                        if (historyFallback.isNotEmpty() && !continueWatchingDeferred.isCompleted) {
-                            if (requestId != loadHomeRequestId) return@cw
-                            val mergedHistory = mergeContinueWatchingResumeData(historyFallback)
-                            val historyCW = Category(
-                                id = "continue_watching",
-                                title = "Continue Watching",
-                                items = mergedHistory.map { it.toMediaItem() }
-                            )
-                            historyCW.items.forEach { mediaRepository.cacheItem(it) }
-                            val updated = _uiState.value.categories.toMutableList()
-                            val index = updated.indexOfFirst { it.id == "continue_watching" }
-                            if (index >= 0) updated[index] = historyCW else updated.add(0, historyCW)
-                            _uiState.value = _uiState.value.copy(categories = updated)
+                        val alreadyHasRealCW = _uiState.value.categories.any {
+                            it.id == "continue_watching" && it.items.isNotEmpty() &&
+                                it.items.none { item -> item.isPlaceholder }
+                        }
+                        if (!alreadyHasRealCW) {
+                            val historyFallback = try {
+                                withTimeoutOrNull(4_000L) { historyDeferred.await() } ?: emptyList()
+                            } catch (_: Exception) { emptyList() }
+                            if (historyFallback.isNotEmpty() && !continueWatchingDeferred.isCompleted) {
+                                if (requestId != loadHomeRequestId) return@cw
+                                val mergedHistory = mergeContinueWatchingResumeData(historyFallback)
+                                val historyCW = Category(
+                                    id = "continue_watching",
+                                    title = "Continue Watching",
+                                    items = mergedHistory.map { it.toMediaItem() }
+                                )
+                                historyCW.items.forEach { mediaRepository.cacheItem(it) }
+                                val updated = _uiState.value.categories.toMutableList()
+                                val index = updated.indexOfFirst { it.id == "continue_watching" }
+                                if (index >= 0) updated[index] = historyCW else updated.add(0, historyCW)
+                                _uiState.value = _uiState.value.copy(categories = updated)
+                            }
                         }
                     }
 
