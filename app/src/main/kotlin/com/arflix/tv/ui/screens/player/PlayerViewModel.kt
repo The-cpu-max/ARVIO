@@ -370,7 +370,7 @@ class PlayerViewModel @Inject constructor(
 
                 val errorMessage = if (mergedStreams.isEmpty()) {
                     if (streamingAddonsCount == 0) {
-                        "No streaming addons configured.\n\nGo to Settings \u2192 Addons to add a streaming addon like Torrentio, then come back and try again."
+                        "No streaming addons configured.\n\nGo to Settings \u2192 Addons to add a streaming addon, then come back and try again."
                     } else {
                         "No streams found for this content. The addons may not have sources for this title."
                     }

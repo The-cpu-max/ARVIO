@@ -469,7 +469,7 @@ fun StreamSelector(
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = if (!hasStreamingAddons)
-                                        "Go to Settings \u2192 Addons to add\na streaming addon like Torrentio"
+                                        "Go to Settings \u2192 Addons to add\na streaming addon"
                                     else
                                         "Try adding more addons",
                                     style = ArflixTypography.caption.copy(fontSize = 12.sp),
