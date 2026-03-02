@@ -49,24 +49,39 @@ class WatchHistoryRepository @Inject constructor(
     private val profileManager: ProfileManager
 ) {
     private fun profileHistorySource(base: String): String {
-        return "profile:${profileManager.getProfileIdSync()}:$base"
+        // Use profile NAME (not UUID) so entries are matched across devices
+        val profileName = profileManager.getProfileNameSync()
+        return "profile:$profileName:$base"
     }
 
     private fun profileHistorySourceFilter(): String {
         // PostgREST wildcard for LIKE is '*'
-        return "like.profile:${profileManager.getProfileIdSync()}:*"
+        val profileName = profileManager.getProfileNameSync()
+        return "like.profile:$profileName:*"
     }
 
     /**
-     * In-memory filter that accepts both legacy (source="arvio") and new
-     * (source="profile:{profileId}:*") entries for the current profile.
+     * In-memory filter that accepts entries for the current profile only.
+     * Matches by profile NAME (cross-device) and profile UUID (same device).
+     * Legacy entries (source = "arvio" / "trakt" / null) are only accepted
+     * for the default profile to avoid cross-profile leakage.
      */
     private fun filterByProfile(entries: List<WatchHistoryEntry>): List<WatchHistoryEntry> {
         val profileId = profileManager.getProfileIdSync()
-        val prefix = "profile:$profileId:"
+        val profileName = profileManager.getProfileNameSync()
+        val prefixById = "profile:$profileId:"
+        val prefixByName = "profile:$profileName:"
+        val isDefault = profileManager.isDefaultProfile()
+
         return entries.filter { entry ->
             val src = entry.source
-            src == null || src == "arvio" || src.startsWith(prefix)
+            when {
+                // Profile-specific entries: match by UUID or name
+                src != null && src.startsWith("profile:") ->
+                    src.startsWith(prefixById) || src.startsWith(prefixByName)
+                // Legacy entries (null / "arvio" / "trakt"): only show on default profile
+                else -> isDefault
+            }
         }
     }
 
@@ -153,7 +168,8 @@ class WatchHistoryRepository @Inject constructor(
      * Get continue watching items (progress < 90%)
      */
     suspend fun getContinueWatching(): List<WatchHistoryEntry> {
-        val userId = authRepositoryProvider.get().getCurrentUserId() ?: return emptyList()
+        val userId = authRepositoryProvider.get().getCurrentUserId()
+        if (userId == null) return emptyList()
 
         return try {
             val records = executeSupabaseCall("get continue watching history") { auth ->
@@ -165,7 +181,8 @@ class WatchHistoryRepository @Inject constructor(
                     limit = 500
                 )
             }
-            filterByProfile(records.map { it.toEntry() })
+            val allEntries = records.map { it.toEntry() }
+            filterByProfile(allEntries)
                 .filter { isEntryInProgress(it) }
         } catch (_: Exception) {
             emptyList()

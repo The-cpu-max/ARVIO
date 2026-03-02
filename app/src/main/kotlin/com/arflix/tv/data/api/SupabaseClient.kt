@@ -126,7 +126,10 @@ interface SupabaseApi {
         @Header("Authorization") auth: String,
         @Header("apikey") apiKey: String = Constants.SUPABASE_ANON_KEY,
         @Query("user_id") userId: String,
-        @Query("select") select: String = "tmdb_id,watched_at"
+        @Query("select") select: String = "tmdb_id,watched_at",
+        @Query("order") order: String = "tmdb_id",
+        @Query("offset") offset: Int = 0,
+        @Query("limit") limit: Int = 1000
     ): List<WatchedMovieRecord>
     
     @GET("rest/v1/watched_episodes")
@@ -134,6 +137,19 @@ interface SupabaseApi {
         @Header("Authorization") auth: String,
         @Header("apikey") apiKey: String = Constants.SUPABASE_ANON_KEY,
         @Query("user_id") userId: String,
+        @Query("select") select: String = "tmdb_id,show_trakt_id,season,episode,trakt_episode_id,tmdb_episode_id,watched_at,updated_at,source",
+        @Query("order") order: String = "tmdb_id,season,episode",
+        @Query("offset") offset: Int = 0,
+        @Query("limit") limit: Int = 1000
+    ): List<WatchedEpisodeRecord>
+
+    /** Targeted query for a single show's watched episodes */
+    @GET("rest/v1/watched_episodes")
+    suspend fun getWatchedEpisodesForShow(
+        @Header("Authorization") auth: String,
+        @Header("apikey") apiKey: String = Constants.SUPABASE_ANON_KEY,
+        @Query("user_id") userId: String,
+        @Query("tmdb_id") tmdbId: String,
         @Query("select") select: String = "tmdb_id,show_trakt_id,season,episode,trakt_episode_id,tmdb_episode_id,watched_at,updated_at,source"
     ): List<WatchedEpisodeRecord>
     
@@ -151,6 +167,15 @@ interface SupabaseApi {
         @Header("apikey") apiKey: String = Constants.SUPABASE_ANON_KEY,
         @Header("Prefer") prefer: String = "resolution=merge-duplicates",
         @Body record: WatchedEpisodeRecord
+    )
+
+    /** RPC-based episode watched write — bypasses PostgREST table endpoint for reliable persistence */
+    @POST("rest/v1/rpc/mark_episode_watched")
+    suspend fun markEpisodeWatchedRpc(
+        @Header("Authorization") auth: String,
+        @Header("apikey") apiKey: String = Constants.SUPABASE_ANON_KEY,
+        @Header("Cache-Control") cacheControl: String = "no-cache, no-store",
+        @Body params: MarkEpisodeWatchedParams
     )
 
     @retrofit2.http.HTTP(method = "DELETE", path = "rest/v1/watched_movies", hasBody = false)
@@ -309,6 +334,16 @@ data class WatchedEpisodeRecord(
     @SerializedName("watched_at") val watchedAt: String? = null,
     val source: String? = null, // "trakt" or "arvio"
     @SerializedName("updated_at") val updatedAt: String? = null
+)
+
+/** Parameters for the mark_episode_watched RPC function */
+data class MarkEpisodeWatchedParams(
+    @SerializedName("p_user_id") val userId: String,
+    @SerializedName("p_tmdb_id") val tmdbId: Int,
+    @SerializedName("p_season") val season: Int,
+    @SerializedName("p_episode") val episode: Int,
+    @SerializedName("p_show_trakt_id") val showTraktId: Int? = null,
+    @SerializedName("p_source") val source: String = "arvio"
 )
 
 /**

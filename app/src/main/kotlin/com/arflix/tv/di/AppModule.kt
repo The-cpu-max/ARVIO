@@ -66,9 +66,14 @@ object AppModule {
     @Provides
     @Singleton
     fun provideSupabaseApi(okHttpClient: OkHttpClient): SupabaseApi {
+        // Supabase API client without disk cache to prevent OkHttp from returning
+        // cached responses for POST/upsert operations (which silently drops writes)
+        val noCacheClient = okHttpClient.newBuilder()
+            .cache(null)
+            .build()
         return Retrofit.Builder()
             .baseUrl(Constants.SUPABASE_URL + "/")
-            .client(okHttpClient)
+            .client(noCacheClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(SupabaseApi::class.java)

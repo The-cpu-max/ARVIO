@@ -130,6 +130,22 @@ class ProfileManager @Inject constructor(
     fun getKeyPrefix(): String = "profile_${getProfileIdSync()}_"
 
     /**
+     * Get the current profile name synchronously (for cross-device matching).
+     * Falls back to profile ID if name lookup fails.
+     */
+    fun getProfileNameSync(): String {
+        return try {
+            runBlocking {
+                val profiles = profileRepository.getProfiles()
+                val profileId = getProfileIdSync()
+                profiles.find { it.id == profileId }?.name?.lowercase()?.trim() ?: profileId
+            }
+        } catch (_: Exception) {
+            getProfileIdSync()
+        }
+    }
+
+    /**
      * Check if this is the default profile (no user profile selected)
      */
     fun isDefaultProfile(): Boolean = getProfileIdSync() == DEFAULT_PROFILE_ID

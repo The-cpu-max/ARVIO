@@ -300,10 +300,8 @@ class DetailsViewModel @Inject constructor(
                 // Get show status
                 val showStatus = if (mediaType == MediaType.TV) mergedItem.status else null
 
-                val traktAuthed = traktRepository.isAuthenticated.first()
-                if (traktAuthed) {
-                    traktRepository.initializeWatchedCache()
-                }
+                // Initialize watched cache (works for both Trakt and non-Trakt Cloud profiles)
+                traktRepository.initializeWatchedCache()
 
                 // Check if item is watched (for movies, check Trakt; for TV, check if started)
                 val isWatched = if (mediaType == MediaType.MOVIE) {
@@ -404,12 +402,23 @@ class DetailsViewModel @Inject constructor(
                 launch {
                     val episodes = runCatching { episodesDeferred?.await() }.getOrNull()
                     if (!episodes.isNullOrEmpty()) {
+                        // Decorate episodes with watched status from cache
+                        val watchedKeys = runCatching {
+                            traktRepository.getWatchedEpisodesForShow(mediaId)
+                        }.getOrDefault(emptySet())
+                        val decoratedEpisodes = if (watchedKeys.isNotEmpty()) {
+                            episodes.map { ep ->
+                                val key = "show_tmdb:$mediaId:${ep.seasonNumber}:${ep.episodeNumber}"
+                                if (watchedKeys.contains(key)) ep.copy(isWatched = true) else ep
+                            }
+                        } else episodes
+
                         val initialEpisodeIndex = if (initialEpisode != null) {
-                            episodes.indexOfFirst { it.episodeNumber == initialEpisode }.coerceAtLeast(0)
+                            decoratedEpisodes.indexOfFirst { it.episodeNumber == initialEpisode }.coerceAtLeast(0)
                         } else 0
                         updateState { state ->
                             state.copy(
-                                episodes = episodes,
+                                episodes = decoratedEpisodes,
                                 initialEpisodeIndex = initialEpisodeIndex
                             )
                         }
@@ -523,8 +532,19 @@ class DetailsViewModel @Inject constructor(
             try {
                 val episodes = mediaRepository.getSeasonEpisodes(currentMediaId, seasonNumber)
                 if (episodes.isNotEmpty()) {
+                    // Decorate episodes with watched status from cache
+                    val watchedKeys = runCatching {
+                        traktRepository.getWatchedEpisodesForShow(currentMediaId)
+                    }.getOrDefault(emptySet())
+                    val decoratedEpisodes = if (watchedKeys.isNotEmpty()) {
+                        episodes.map { ep ->
+                            val key = "show_tmdb:$currentMediaId:${ep.seasonNumber}:${ep.episodeNumber}"
+                            if (watchedKeys.contains(key)) ep.copy(isWatched = true) else ep
+                        }
+                    } else episodes
+
                     _uiState.value = _uiState.value.copy(
-                        episodes = episodes,
+                        episodes = decoratedEpisodes,
                         currentSeason = seasonNumber
                     )
                 } else {
@@ -583,6 +603,38 @@ class DetailsViewModel @Inject constructor(
                             targetEpisode.seasonNumber,
                             targetEpisode.episodeNumber
                         )
+
+                        // Save the NEXT episode to CW (local + cloud) so it appears on all devices
+                        try {
+                            val nextEp = targetEpisode.episodeNumber + 1
+                            traktRepository.saveLocalContinueWatching(
+                                mediaType = MediaType.TV,
+                                tmdbId = currentMediaId,
+                                title = currentItem.title,
+                                posterPath = currentItem.image,
+                                backdropPath = currentItem.backdrop,
+                                season = targetEpisode.seasonNumber,
+                                episode = nextEp,
+                                episodeTitle = null,
+                                progress = 3,
+                                positionSeconds = 1L,
+                                durationSeconds = 1L,
+                                year = currentItem.year
+                            )
+                            watchHistoryRepository.saveProgress(
+                                mediaType = MediaType.TV,
+                                tmdbId = currentMediaId,
+                                title = currentItem.title,
+                                poster = currentItem.image,
+                                backdrop = currentItem.backdrop,
+                                season = targetEpisode.seasonNumber,
+                                episode = nextEp,
+                                episodeTitle = null,
+                                progress = 0.01f,
+                                duration = 1L,
+                                position = 60L
+                            )
+                        } catch (_: Exception) {}
                     } else {
                         traktRepository.markEpisodeUnwatched(
                             currentMediaId,
@@ -901,6 +953,41 @@ class DetailsViewModel @Inject constructor(
                     traktRepository.markEpisodeWatched(currentMediaId, season, episode)
                     // Also remove from Supabase watch_history (removes from Continue Watching)
                     watchHistoryRepository.removeFromHistory(currentMediaId, season, episode)
+
+                    // Save the NEXT episode to CW (local + cloud) so it appears on all devices
+                    val item = _uiState.value.item
+                    if (item != null) {
+                        try {
+                            val nextEp = episode + 1
+                            traktRepository.saveLocalContinueWatching(
+                                mediaType = MediaType.TV,
+                                tmdbId = currentMediaId,
+                                title = item.title,
+                                posterPath = item.image,
+                                backdropPath = item.backdrop,
+                                season = season,
+                                episode = nextEp,
+                                episodeTitle = null,
+                                progress = 3,
+                                positionSeconds = 1L,
+                                durationSeconds = 1L,
+                                year = item.year
+                            )
+                            watchHistoryRepository.saveProgress(
+                                mediaType = MediaType.TV,
+                                tmdbId = currentMediaId,
+                                title = item.title,
+                                poster = item.image,
+                                backdrop = item.backdrop,
+                                season = season,
+                                episode = nextEp,
+                                episodeTitle = null,
+                                progress = 0.01f,
+                                duration = 1L,
+                                position = 60L
+                            )
+                        } catch (_: Exception) {}
+                    }
                 } else {
                     traktRepository.markEpisodeUnwatched(currentMediaId, season, episode)
                 }

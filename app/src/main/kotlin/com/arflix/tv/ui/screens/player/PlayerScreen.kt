@@ -344,10 +344,10 @@ fun PlayerScreen(
         // cannot blow past available memory.
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                30_000,    // minBufferMs — keep refilling once below 30s
+                15_000,    // minBufferMs — keep refilling once below 15s
                 60_000,    // maxBufferMs — 1 min ahead (reduced from 2 min for OOM safety)
-                2_500,     // bufferForPlaybackMs — start playing after 2.5s buffered
-                5_000      // bufferForPlaybackAfterRebufferMs — 5s after rebuffer
+                500,       // bufferForPlaybackMs — start playing after 0.5s buffered (fast start)
+                2_000      // bufferForPlaybackAfterRebufferMs — 2s after rebuffer
             )
             .setTargetBufferBytes(100 * 1024 * 1024) // 100 MB hard cap (prevents OOM on high-bitrate streams)
             .setPrioritizeTimeOverSizeThresholds(false) // respect byte limit over time limit
@@ -707,30 +707,10 @@ fun PlayerScreen(
             } else {
                 exoPlayer.setMediaSource(mediaSource)
             }
-            // Startup gate: wait for a minimum buffered-ahead window before playing.
-            // Lowered targets for faster time-to-first-frame:
-            // - Normal/debrid streams: 2.5s (just above bufferForPlaybackMs, trust the CDN)
-            // - Heavy 4K/remux/DV streams: 5s (need a bit more to avoid early rebuffer)
-            val heavy = isLikelyHeavyStream(uiState.selectedStream)
-            val startupBufferedTargetMs = if (heavy) 5_000L else 2_500L
-            val startupWaitTimeoutMs = if (heavy) 75_000L else 35_000L
-
-            exoPlayer.playWhenReady = false
+            // Let ExoPlayer's LoadControl handle buffering (bufferForPlaybackMs = 500ms).
+            // No manual startup gate — trust the CDN/debrid to deliver fast enough.
+            exoPlayer.playWhenReady = true
             exoPlayer.prepare()
-
-            launch {
-                val waitStart = System.currentTimeMillis()
-                while (!playerReleased) {
-                    val bufferedAheadMs = (exoPlayer.bufferedPosition - exoPlayer.currentPosition).coerceAtLeast(0L)
-                    val ready = exoPlayer.playbackState == Player.STATE_READY
-                    if (ready && bufferedAheadMs >= startupBufferedTargetMs) break
-                    if (System.currentTimeMillis() - waitStart >= startupWaitTimeoutMs) break
-                    delay(100) // 100ms poll for faster response when target is reached
-                }
-                if (!playerReleased) {
-                    exoPlayer.playWhenReady = true
-                }
-            }
 
             // Enable text track display
             val subtitle = uiState.selectedSubtitle
@@ -1081,11 +1061,10 @@ fun PlayerScreen(
                 blackVideoReadySinceMs = null
             }
 
-            // Mark playback as started only after media time moves beyond 00:00.
+            // Mark playback as started as soon as the player is actually playing.
             if (!hasPlaybackStarted &&
                 exoPlayer.playbackState == Player.STATE_READY &&
-                exoPlayer.isPlaying &&
-                exoPlayer.currentPosition > 800L
+                exoPlayer.isPlaying
             ) {
                 hasPlaybackStarted = true
             }
@@ -1122,7 +1101,7 @@ fun PlayerScreen(
                 }
             }
 
-            delay(1000)
+            delay(if (hasPlaybackStarted) 1000L else 150L)
         }
     }
 

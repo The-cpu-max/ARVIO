@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.arflix.tv.data.model.Profile
 import com.arflix.tv.data.model.ProfileColors
+import com.arflix.tv.data.repository.CloudSyncRepository
 import com.arflix.tv.data.repository.ProfileManager
 import com.arflix.tv.data.repository.ProfileRepository
 import com.arflix.tv.data.repository.TraktRepository
@@ -38,7 +39,8 @@ class ProfileViewModel @Inject constructor(
     private val profileManager: ProfileManager,
     private val traktRepository: TraktRepository,
     private val watchlistRepository: WatchlistRepository,
-    private val iptvRepository: IptvRepository
+    private val iptvRepository: IptvRepository,
+    private val cloudSyncRepository: CloudSyncRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProfileUiState())
@@ -104,9 +106,18 @@ class ProfileViewModel @Inject constructor(
         viewModelScope.launch {
             profileRepository.setActiveProfile(profile.id)
         }
+
+        // Pull latest cloud state so cross-device changes (IPTV, addons, catalogs,
+        // watchlist, settings) are applied before the Home screen loads.
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { cloudSyncRepository.pullFromCloud() }
+        }
+
         // Warm IPTV caches immediately for this profile so VOD can appear in stream sources
         // without requiring the user to open IPTV settings/pages first.
         viewModelScope.launch(Dispatchers.IO) {
+            // Small delay to let cloud pull finish writing IPTV config first
+            kotlinx.coroutines.delay(1500)
             runCatching {
                 iptvRepository.warmupFromCacheOnly()
                 // Also trigger a non-forced background refresh so Live TV starts loading

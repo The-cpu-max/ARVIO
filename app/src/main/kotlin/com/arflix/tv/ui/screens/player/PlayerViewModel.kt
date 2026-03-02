@@ -1450,6 +1450,32 @@ class PlayerViewModel @Inject constructor(
                 } catch (e: Exception) {
                     // Delete playback failed
                 }
+
+                // When a TV episode completes, immediately save the next episode to
+                // local Continue Watching so CW isn't empty between episodes.
+                // Without this, the next episode only appears in CW after 60s of
+                // playback (the hasMeaningfulPosition threshold), leaving a gap where
+                // CW shows nothing for non-Trakt profiles.
+                if (currentMediaType == MediaType.TV && currentSeason != null && currentEpisode != null) {
+                    try {
+                        val nextEpisode = currentEpisode!! + 1
+                        traktRepository.saveLocalContinueWatching(
+                            mediaType = currentMediaType,
+                            tmdbId = currentMediaId,
+                            title = currentItemTitle.ifEmpty { currentTitle },
+                            posterPath = currentPoster,
+                            backdropPath = currentBackdrop,
+                            season = currentSeason,
+                            episode = nextEpisode,
+                            episodeTitle = null,
+                            progress = 3, // meets MIN_PROGRESS_THRESHOLD to avoid filter
+                            positionSeconds = 1L, // meets hasMeaningfulPosition threshold
+                            durationSeconds = (duration / 1000L).coerceAtLeast(1L)
+                        )
+                    } catch (_: Exception) {
+                        // Best-effort: don't let CW save failure affect playback
+                    }
+                }
             }
 
             lastIsPlaying = isPlaying

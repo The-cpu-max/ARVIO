@@ -1162,7 +1162,15 @@ class HomeViewModel @Inject constructor(
                     currentState.heroItem?.let { hero ->
                         if (merged.none { cat -> cat.items.any { it.id == hero.id && it.mediaType == hero.mediaType } }) {
                             val fallbackHero = merged.firstOrNull()?.items?.firstOrNull()
-                            _uiState.value = currentState.copy(categories = merged, heroItem = fallbackHero)
+                            val fallbackLogoUrl = fallbackHero?.let {
+                                val key = "${it.mediaType}_${it.id}"
+                                getCachedLogo(key)
+                            }
+                            _uiState.value = currentState.copy(
+                                categories = merged,
+                                heroItem = fallbackHero,
+                                heroLogoUrl = fallbackLogoUrl
+                            )
                             return
                         }
                     }
@@ -1493,7 +1501,9 @@ class HomeViewModel @Inject constructor(
             val entries = watchHistoryRepository.getContinueWatching()
             if (entries.isEmpty()) return emptyList()
             val mapped = entries.distinctBy { entry ->
-                "${entry.media_type}:${entry.show_tmdb_id}:${entry.season ?: -1}:${entry.episode ?: -1}"
+                // Deduplicate at show level for TV — only keep the most recent episode per show.
+                // Entries are already sorted by updated_at desc, so distinctBy keeps the latest.
+                "${entry.media_type}:${entry.show_tmdb_id}"
             }.mapNotNull { entry ->
                 val mediaType = if (entry.media_type == "tv") MediaType.TV else MediaType.MOVIE
                 val storedPct = (entry.progress * 100f).toInt()
@@ -1984,9 +1994,7 @@ class HomeViewModel @Inject constructor(
                 } else {
                     val nextEp = item.nextEpisode
                     if (nextEp != null) {
-                        traktRepository.markEpisodeWatched(item.id, nextEp.seasonNumber, nextEp.episodeNumber)
-                        watchHistoryRepository.removeFromHistory(item.id, nextEp.seasonNumber, nextEp.episodeNumber)
-
+                        // OPTIMISTIC UI UPDATE: Remove from CW and show toast immediately
                         val updatedCategories = _uiState.value.categories.map { category ->
                             if (category.id == "continue_watching") {
                                 category.copy(items = category.items.filter { it.id != item.id })
@@ -2002,6 +2010,44 @@ class HomeViewModel @Inject constructor(
                             toastMessage = "S${nextEp.seasonNumber}E${nextEp.episodeNumber} marked as watched",
                             toastType = ToastType.SUCCESS
                         )
+
+                        // Sync to backend after UI update (these may be slow for non-Trakt/non-Cloud profiles)
+                        traktRepository.markEpisodeWatched(item.id, nextEp.seasonNumber, nextEp.episodeNumber)
+                        watchHistoryRepository.removeFromHistory(item.id, nextEp.seasonNumber, nextEp.episodeNumber)
+
+                        // Save the NEXT episode to CW (local + cloud) so it appears on all devices
+                        try {
+                            val followingEpisode = nextEp.episodeNumber + 1
+                            traktRepository.saveLocalContinueWatching(
+                                mediaType = MediaType.TV,
+                                tmdbId = item.id,
+                                title = item.title,
+                                posterPath = item.image,
+                                backdropPath = item.backdrop,
+                                season = nextEp.seasonNumber,
+                                episode = followingEpisode,
+                                episodeTitle = null,
+                                progress = 3,
+                                positionSeconds = 1L,
+                                durationSeconds = 1L,
+                                year = item.year
+                            )
+                            watchHistoryRepository.saveProgress(
+                                mediaType = MediaType.TV,
+                                tmdbId = item.id,
+                                title = item.title,
+                                poster = item.image,
+                                backdrop = item.backdrop,
+                                season = nextEp.seasonNumber,
+                                episode = followingEpisode,
+                                episodeTitle = null,
+                                progress = 0.01f,
+                                duration = 1L,
+                                position = 60L
+                            )
+                            lastContinueWatchingUpdateMs = 0L
+                            refreshContinueWatchingOnly()
+                        } catch (_: Exception) {}
                     } else {
                         _uiState.value = _uiState.value.copy(
                             toastMessage = "No episode info available",
@@ -2037,9 +2083,7 @@ class HomeViewModel @Inject constructor(
                 } else {
                     val nextEp = item.nextEpisode
                     if (nextEp != null) {
-                        traktRepository.markEpisodeWatched(item.id, nextEp.seasonNumber, nextEp.episodeNumber)
-                        watchHistoryRepository.removeFromHistory(item.id, nextEp.seasonNumber, nextEp.episodeNumber)
-
+                        // OPTIMISTIC UI UPDATE: Remove from CW and show toast immediately
                         val updatedCategories = _uiState.value.categories.map { category ->
                             if (category.id == "continue_watching") {
                                 category.copy(items = category.items.filter { it.id != item.id })
@@ -2055,6 +2099,50 @@ class HomeViewModel @Inject constructor(
                             toastMessage = "S${nextEp.seasonNumber}E${nextEp.episodeNumber} marked as watched",
                             toastType = ToastType.SUCCESS
                         )
+
+                        // Sync to backend after UI update (these may be slow for non-Trakt/non-Cloud profiles)
+                        try {
+                            traktRepository.markEpisodeWatched(item.id, nextEp.seasonNumber, nextEp.episodeNumber)
+                        } catch (_: Exception) {}
+                        try {
+                            watchHistoryRepository.removeFromHistory(item.id, nextEp.seasonNumber, nextEp.episodeNumber)
+                        } catch (_: Exception) {}
+
+                        // Save the NEXT episode to CW (local + cloud) so it appears on all devices
+                        try {
+                            val followingEpisode = nextEp.episodeNumber + 1
+                            traktRepository.saveLocalContinueWatching(
+                                mediaType = MediaType.TV,
+                                tmdbId = item.id,
+                                title = item.title,
+                                posterPath = item.image,
+                                backdropPath = item.backdrop,
+                                season = nextEp.seasonNumber,
+                                episode = followingEpisode,
+                                episodeTitle = null,
+                                progress = 1,
+                                positionSeconds = 1L,
+                                durationSeconds = 1L,
+                                year = item.year
+                            )
+                            // Also save to Supabase for cross-device sync
+                            watchHistoryRepository.saveProgress(
+                                mediaType = MediaType.TV,
+                                tmdbId = item.id,
+                                title = item.title,
+                                poster = item.image,
+                                backdrop = item.backdrop,
+                                season = nextEp.seasonNumber,
+                                episode = followingEpisode,
+                                episodeTitle = null,
+                                progress = 0.01f,
+                                duration = 1L,
+                                position = 60L
+                            )
+                            // Reset throttle so refresh actually runs
+                            lastContinueWatchingUpdateMs = 0L
+                            refreshContinueWatchingOnly()
+                        } catch (_: Exception) {}
                     } else {
                         _uiState.value = _uiState.value.copy(
                             toastMessage = "No episode info available",

@@ -335,9 +335,17 @@ fun HomeScreen(
 
     // Update hero based on focused item with adaptive idle delay to avoid heavy churn while scrolling
     LaunchedEffect(Unit) {
-        snapshotFlow { Pair(focusState.currentRowIndex, focusState.currentItemIndex) }
+        snapshotFlow {
+            Triple(
+                focusState.currentRowIndex,
+                focusState.currentItemIndex,
+                // Include first item ID so the flow re-emits when categories load or CW changes,
+                // preventing distinctUntilChanged from swallowing the initial (0,0) emission.
+                latestDisplayCategories.firstOrNull()?.items?.firstOrNull()?.id ?: -1
+            )
+        }
             .distinctUntilChanged()
-            .collectLatest { (rowIndex, itemIndex) ->
+            .collectLatest { (rowIndex, itemIndex, _) ->
                 val categoriesSnapshot = latestDisplayCategories
                 if (categoriesSnapshot.isEmpty() || focusState.isSidebarFocused) return@collectLatest
                 val now = SystemClock.elapsedRealtime()
@@ -1580,7 +1588,9 @@ private fun ContentRow(
                 category.items,
                 key = { _, item ->
                     // Stable identity prevents unnecessary card disposal/recreation on progress/title updates.
-                    "${item.mediaType.name}-${item.id}"
+                    // Include season/episode for CW items so two episodes of the same show don't collide.
+                    val episodeSuffix = if (item.nextEpisode != null) "_S${item.nextEpisode.seasonNumber}E${item.nextEpisode.episodeNumber}" else ""
+                    "${item.mediaType.name}-${item.id}${episodeSuffix}"
                 },
                 contentType = { _, item -> "${item.mediaType.name}_card" }
             ) { index, item ->

@@ -536,27 +536,29 @@ class TraktSyncService @Inject constructor(
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val userId = getUserId()
-            val hasSupabase = userId != null && getSupabaseAuth() != null
             val traktAuth = getAuthHeader()
 
-            val now = Instant.now().toString()
-
             // 1. Write to Supabase first (source of truth) when available
-            if (hasSupabase) {
-                val record = WatchedEpisodeRecord(
-                    userId = userId ?: "local",
-                    showTmdbId = showTmdbId,
-                    season = season,
-                    episode = episode,
-                    showTraktId = showTraktId,
-                    watched = true,
-                    watchedAt = now,
-                    source = "arvio",
-                    updatedAt = now
-                )
-                executeSupabaseCall("mark episode watched") { auth ->
-                    supabaseApi.markEpisodeWatched(auth, record = record)
-                }
+            //    Uses RPC function (direct SQL) instead of PostgREST table endpoint
+            //    to avoid silent write drops on rapid sequential inserts.
+            //    Gate only on userId (not getSupabaseAuth) — let executeSupabaseCall
+            //    handle token refresh so expired sessions don't silently skip writes.
+            if (userId != null) {
+                try {
+                    executeSupabaseCall("mark episode watched") { auth ->
+                        supabaseApi.markEpisodeWatchedRpc(
+                            auth,
+                            params = MarkEpisodeWatchedParams(
+                                userId = userId,
+                                tmdbId = showTmdbId,
+                                season = season,
+                                episode = episode,
+                                showTraktId = showTraktId,
+                                source = "arvio"
+                            )
+                        )
+                    }
+                } catch (_: Exception) {}
             }
 
             // 2. Sync to Trakt (queue on failure or if offline)
@@ -600,7 +602,7 @@ class TraktSyncService @Inject constructor(
             }
 
             // 3. Remove from Supabase watch_history (no longer in-progress)
-            if (hasSupabase) {
+            if (userId != null) {
                 try {
                     executeSupabaseCall("delete watch history (episode)") { auth ->
                         supabaseApi.deleteWatchHistory(
@@ -618,7 +620,7 @@ class TraktSyncService @Inject constructor(
             // 4. Remove playback item from Trakt so it disappears from Continue Watching
             removePlaybackForContent(traktAuth, showTmdbId, MediaType.TV)
 
-            traktSyncOk || hasSupabase
+            traktSyncOk || userId != null
         } catch (e: Exception) {
             false
         }
@@ -766,14 +768,22 @@ class TraktSyncService @Inject constructor(
                 return@withContext cachedWatchedMovies?.map { it.tmdbId }?.toSet() ?: emptySet()
             }
 
-            // PostgREST requires "eq." prefix for equality filtering
-            val records = executeSupabaseCall("get watched movies") { auth ->
-                supabaseApi.getWatchedMovies(auth, userId = "eq.$userId")
+            // Paginate to get ALL watched movies (PostgREST default limit is 1000)
+            val allRecords = mutableListOf<WatchedMovieRecord>()
+            val pageSize = 1000
+            var offset = 0
+            while (true) {
+                val page = executeSupabaseCall("get watched movies page $offset") { auth ->
+                    supabaseApi.getWatchedMovies(auth, userId = "eq.$userId", offset = offset, limit = pageSize)
+                }
+                allRecords.addAll(page)
+                if (page.size < pageSize) break // Last page
+                offset += pageSize
             }
-            if (records.isEmpty() && cachedWatchedMovies != null) {
+            if (allRecords.isEmpty() && cachedWatchedMovies != null) {
                 return@withContext cachedWatchedMovies?.map { it.tmdbId }?.toSet() ?: emptySet()
             }
-            records.map { it.tmdbId }.toSet()
+            allRecords.map { it.tmdbId }.toSet()
         } catch (e: Exception) {
             emptySet()
         }
@@ -781,7 +791,8 @@ class TraktSyncService @Inject constructor(
 
     /**
      * Get all watched episodes from Supabase
-     * Returns set of keys in format "tmdbId-season-episode"
+     * Returns set of keys in format "show_tmdb:tmdbId:season:episode" (and trakt variants)
+     * Paginates to get ALL records, bypassing PostgREST 1000-row default limit.
      */
     suspend fun getWatchedEpisodes(): Set<String> = withContext(Dispatchers.IO) {
         try {
@@ -801,12 +812,21 @@ class TraktSyncService @Inject constructor(
                 return@withContext keys
             }
 
-            // PostgREST requires "eq." prefix for equality filtering
-            val records = executeSupabaseCall("get watched episodes") { auth ->
-                supabaseApi.getWatchedEpisodes(auth, userId = "eq.$userId")
+            // Paginate to get ALL watched episodes (PostgREST default limit is 1000)
+            val allRecords = mutableListOf<WatchedEpisodeRecord>()
+            val pageSize = 1000
+            var offset = 0
+            while (true) {
+                val page = executeSupabaseCall("get watched episodes page $offset") { auth ->
+                    supabaseApi.getWatchedEpisodes(auth, userId = "eq.$userId", offset = offset, limit = pageSize)
+                }
+                allRecords.addAll(page)
+                if (page.size < pageSize) break // Last page
+                offset += pageSize
             }
+
             val keys = mutableSetOf<String>()
-            records.forEach { record ->
+            allRecords.forEach { record ->
                 val season = record.season
                 val episode = record.episode
                 if (season == null || episode == null) return@forEach
@@ -826,6 +846,32 @@ class TraktSyncService @Inject constructor(
                     buildEpisodeKey(null, null, record.showTmdbId, season, episode)?.let { cachedKeys.add(it) }
                 }
                 return@withContext cachedKeys
+            }
+            keys
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
+
+    /**
+     * Get watched episodes for a specific show — direct Supabase query, no pagination issues.
+     */
+    suspend fun getWatchedEpisodesForShow(showTmdbId: Int): Set<String> = withContext(Dispatchers.IO) {
+        try {
+            val userId = getUserId()
+            val hasSupabase = userId != null && getSupabaseAuth() != null
+            if (!hasSupabase) return@withContext emptySet()
+
+            val records = executeSupabaseCall("get watched episodes for show $showTmdbId") { auth ->
+                supabaseApi.getWatchedEpisodesForShow(auth, userId = "eq.$userId", tmdbId = "eq.$showTmdbId")
+            }
+            val keys = mutableSetOf<String>()
+            records.forEach { record ->
+                val season = record.season
+                val episode = record.episode
+                buildEpisodeKey(record.traktEpisodeId, null, null, season, episode)?.let { keys.add(it) }
+                buildEpisodeKey(null, record.showTraktId, null, season, episode)?.let { keys.add(it) }
+                buildEpisodeKey(null, null, record.showTmdbId, season, episode)?.let { keys.add(it) }
             }
             keys
         } catch (e: Exception) {
@@ -1605,7 +1651,13 @@ class TraktSyncService @Inject constructor(
         operation: String,
         block: suspend (String) -> T
     ): T {
-        val auth = getSupabaseAuth() ?: throw IllegalStateException("Supabase auth failed")
+        // Try getting auth, force-refresh if initial attempt fails
+        var auth = getSupabaseAuth()
+        if (auth == null) {
+            val refreshed = authRepository.refreshAccessToken()
+            auth = if (!refreshed.isNullOrBlank()) "Bearer $refreshed" else null
+        }
+        if (auth == null) throw IllegalStateException("Supabase auth failed")
         return try {
             block(auth)
         } catch (e: HttpException) {

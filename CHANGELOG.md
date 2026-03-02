@@ -7,6 +7,27 @@ All notable changes to this project are documented in this file.
 ### Added
 - (Nothing yet)
 
+## [1.8.2] - 2026-03-02
+
+### Changed
+- TMDB and Trakt API calls now go directly to the APIs instead of through ARVIO Cloud proxy, drastically reducing cloud function usage.
+- Cross-device cloud sync (IPTV, addons, catalogs, watchlist, settings) now triggers on every profile selection instead of only on first app launch.
+- Playback starts significantly faster — removed redundant startup buffer gate and lowered initial buffer threshold.
+- App version updated to `1.8.2` (`versionCode 182`).
+
+### Fixed
+- Continue Watching no longer shows a 60-second empty gap when auto-playing the next episode.
+- "Mark as Watched" from the context menu now correctly removes the item from Continue Watching.
+- "Mark as Watched" now automatically adds the next episode to Continue Watching.
+- Watched status now loads from ARVIO Cloud for non-Trakt profiles, so badges appear without a Trakt account.
+- Continue Watching now syncs across devices for non-Trakt profiles using profile name instead of device-local UUID.
+- Legacy Continue Watching entries no longer leak across profiles.
+- Fixed duplicate key crash ("Key was already used") in Continue Watching row when the same show appeared twice.
+- Watched badges now appear on initial Details page load without needing to navigate away and back.
+- ARVIO Cloud watched data queries now paginate correctly for large libraries (previously capped at 1,000 rows).
+- Hero clear logo now loads immediately on startup when selecting a profile, instead of requiring a focus change.
+- Next auto-played episode no longer starts at 01:00 — correctly starts at 00:01.
+
 ## [1.6.0] - 2026-02-22
 
 ### Added
