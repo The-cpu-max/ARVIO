@@ -36,11 +36,11 @@ Note: If you mean **DTX**, ARVIO supports **DTS-family audio formats** (DTS/DTS-
 
 | Home | Details |
 |------|---------|
-| ![Home](screenshots/home.png) | ![Details](screenshots/details.png) |
+| ![Home](screenshots/home_v184.png) | ![Details](screenshots/details_v184.png) |
 
 | Player | Profiles |
 |--------|----------|
-| ![Player](screenshots/player.png) | ![Profiles](screenshots/settings.png) |
+| ![Player](screenshots/player.png) | ![Profiles](screenshots/profiles_v184.png) |
 
 | Live TV | Catalogs (Trakt + MDBList) |
 |---------|------------------------------|
