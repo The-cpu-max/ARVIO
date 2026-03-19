@@ -40,7 +40,7 @@ Note: If you mean **DTX**, ARVIO supports **DTS-family audio formats** (DTS/DTS-
 
 | Mobile Home | Mobile Details |
 |-------------|----------------|
-| ![Mobile Home](screenshots/mobile_home.webp) | ![Mobile Details](screenshots/mobile_details.webp) |
+| ![Mobile Home](screenshots/mobile_details.webp) | ![Mobile Details](screenshots/mobile_home.webp) |
 
 | Cast | Profiles |
 |------|----------|
