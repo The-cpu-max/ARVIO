@@ -229,6 +229,7 @@ class DetailsViewModel @Inject constructor(
                 val prefs = context.settingsDataStore.data.first()
                 val autoPlaySingleSource = prefs[autoPlaySingleSourceKey()] ?: true
                 val autoPlayMinQuality = normalizeAutoPlayMinQuality(prefs[autoPlayMinQualityKey()])
+
                 val previousState = _uiState.value
                 val previousMatches = previousState.item?.id == mediaId &&
                     previousState.item?.mediaType == mediaType
