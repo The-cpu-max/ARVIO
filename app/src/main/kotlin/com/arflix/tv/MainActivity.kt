@@ -199,7 +199,8 @@ class MainActivity : ComponentActivity() {
             val effectiveDeviceType = if (!hasTouchScreen && deviceType != DeviceType.TV) DeviceType.TV else deviceType
             CompositionLocalProvider(
                 LocalDeviceType provides effectiveDeviceType,
-                LocalHasTouchScreen provides hasTouchScreen
+                LocalHasTouchScreen provides hasTouchScreen,
+                androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Ltr
             ) {
                 ArflixTvTheme {
                     val startupState by startupViewModel.state.collectAsState()

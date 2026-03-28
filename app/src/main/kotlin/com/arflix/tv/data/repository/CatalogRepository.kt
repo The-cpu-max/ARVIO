@@ -49,7 +49,7 @@ class CatalogRepository @Inject constructor(
 
     private val gson = Gson()
     private fun catalogsKey(profileId: String) = stringPreferencesKey("profile_${profileId}_catalogs_v1")
-    private fun hiddenPreinstalledKey(profileId: String) = stringPreferencesKey("profile_${profileId}_hidden_preinstalled_catalogs_v1")
+    private fun hiddenPreinstalledKey(profileId: String) = stringPreferencesKey("profile_${profileId}_hidden_preinstalled_catalogs_v2")
     private val legacyDefaultKey = stringPreferencesKey("profile_default_catalogs_v1")
     private val legacyGlobalKey = stringPreferencesKey("catalogs_v1")
     private val listType = object : TypeToken<List<CatalogConfig>>() {}.type

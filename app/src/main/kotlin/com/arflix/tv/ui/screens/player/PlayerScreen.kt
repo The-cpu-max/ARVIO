@@ -1816,7 +1816,8 @@ fun PlayerScreen(
                                 )
                             )
                         )
-                        .padding(horizontal = if (isTouchDevice) 24.dp else 48.dp, vertical = if (isTouchDevice) 16.dp else 24.dp)
+                        .padding(horizontal = if (isTouchDevice) 24.dp else 48.dp)
+                        .padding(top = if (isTouchDevice) 16.dp else 24.dp, bottom = if (isTouchDevice) 32.dp else 24.dp)
                 ) {
                     // Icon buttons row - left-aligned, tight above trackbar (avoids subtitle overlap)
                     Row(

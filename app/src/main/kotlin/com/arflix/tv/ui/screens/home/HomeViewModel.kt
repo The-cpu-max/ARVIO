@@ -1010,22 +1010,47 @@ class HomeViewModel @Inject constructor(
                                 category
                             }
                         }
-                    // Load MDBList preinstalled catalogs via custom catalog path
-                    val mdblistPreinstalled = savedCatalogs
-                        .filter { it.isPreinstalled && !it.sourceUrl.isNullOrBlank() }
-                        .map { cfg ->
-                            async(networkDispatcher) {
-                                try {
-                                    val result = mediaRepository.loadCustomCatalogPage(catalog = cfg, offset = 0, limit = 20)
-                                    if (result.items.isNotEmpty()) {
-                                        Category(id = cfg.id, title = cfg.title, items = result.items)
-                                    } else null
-                                } catch (_: Exception) { null }
+                    // Load MDBList preinstalled catalogs - first 8 immediately, rest lazily on scroll
+                    val mdblistConfigs = savedCatalogs.filter { it.isPreinstalled && !it.sourceUrl.isNullOrBlank() }
+                    val initialBatch = mdblistConfigs.take(3)
+                    val deferredBatch = mdblistConfigs.drop(8)
+                    val mdblistInitial = initialBatch.map { cfg ->
+                        async(networkDispatcher) {
+                            try {
+                                val result = mediaRepository.loadCustomCatalogPage(catalog = cfg, offset = 0, limit = 20)
+                                if (result.items.isNotEmpty()) Category(id = cfg.id, title = cfg.title, items = result.items) else null
+                            } catch (_: Exception) { null }
+                        }
+                    }
+                    val mdblistCategories = mdblistInitial.awaitAll().filterNotNull()
+                    // Create placeholder categories for deferred ones (will load on scroll)
+                    val deferredCategories = deferredBatch.map { cfg -> Category(id = cfg.id, title = cfg.title, items = emptyList()) }
+                    // Merge both lists maintaining the saved catalog order
+                    val allPreinstalledById = (tmdbPreinstalled + mdblistCategories + deferredCategories).associateBy { it.id }
+
+                    // Load deferred catalogs in background in batches of 3
+                    if (deferredBatch.isNotEmpty()) {
+                        viewModelScope.launch(networkDispatcher) {
+                            deferredBatch.chunked(3).forEach { batch ->
+                                val results = batch.map { cfg ->
+                                    async {
+                                        try {
+                                            val result = mediaRepository.loadCustomCatalogPage(catalog = cfg, offset = 0, limit = 20)
+                                            if (result.items.isNotEmpty()) Category(id = cfg.id, title = cfg.title, items = result.items) else null
+                                        } catch (_: Exception) { null }
+                                    }
+                                }.awaitAll().filterNotNull()
+                                if (results.isNotEmpty()) {
+                                    val current = _uiState.value.categories.toMutableList()
+                                    for (cat in results) {
+                                        val idx = current.indexOfFirst { it.id == cat.id }
+                                        if (idx >= 0) current[idx] = cat else current.add(cat)
+                                    }
+                                    _uiState.value = _uiState.value.copy(categories = current)
+                                }
                             }
                         }
-                    val mdblistCategories = mdblistPreinstalled.awaitAll().filterNotNull()
-                    // Merge both lists maintaining the saved catalog order
-                    val allPreinstalledById = (tmdbPreinstalled + mdblistCategories).associateBy { it.id }
+                    }
                     val preinstalled = savedCatalogs
                         .filter { it.isPreinstalled }
                         .mapNotNull { cfg -> allPreinstalledById[cfg.id] }

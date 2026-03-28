@@ -185,6 +185,7 @@ class SettingsViewModel @Inject constructor(
     private fun includeSpecialsKeyFor(profileId: String) = profileManager.profileBooleanKeyFor(profileId, "include_specials")
     private val gson = Gson()
     private var lastObservedIptvM3u: String = ""
+    private var lastObservedStalkerUrl: String = ""
 
     private var traktPollingJob: Job? = null
     private var iptvLoadJob: Job? = null
@@ -943,27 +944,32 @@ class SettingsViewModel @Inject constructor(
                 if (!hasObservedIptvConfig) {
                     hasObservedIptvConfig = true
                     lastObservedIptvM3u = config.m3uUrl
-                    if (config.m3uUrl.isBlank()) {
+                    lastObservedStalkerUrl = config.stalkerPortalUrl
+                    val hasAnyIptvConfig = config.m3uUrl.isNotBlank() || config.stalkerPortalUrl.isNotBlank()
+                    if (!hasAnyIptvConfig) {
                         _uiState.value = _uiState.value.copy(
                             iptvChannelCount = 0,
                             iptvError = null,
                             iptvProgressText = null,
                             iptvProgressPercent = 0
                         )
-                    } else if (iptvLoadJob?.isActive != true && _uiState.value.iptvChannelCount == 0) {
+                    } else if (hasAnyIptvConfig && iptvLoadJob?.isActive != true && _uiState.value.iptvChannelCount == 0) {
                         // Auto-refresh IPTV on startup/profile switch when configured but not loaded yet.
                         refreshIptv(showToast = false, force = false)
                     }
                     return@collect
                 }
 
-                if (config.m3uUrl.isNotBlank() && config.m3uUrl != lastObservedIptvM3u) {
+                val hasAnyConfig = config.m3uUrl.isNotBlank() || config.stalkerPortalUrl.isNotBlank()
+                if (hasAnyConfig && (config.m3uUrl != lastObservedIptvM3u || config.stalkerPortalUrl != lastObservedStalkerUrl)) {
                     lastObservedIptvM3u = config.m3uUrl
+                    lastObservedStalkerUrl = config.stalkerPortalUrl
                     if (iptvLoadJob?.isActive != true) {
                         refreshIptv(showToast = false, force = false)
                     }
-                } else if (config.m3uUrl.isBlank()) {
+                } else if (!hasAnyConfig) {
                     lastObservedIptvM3u = ""
+                    lastObservedStalkerUrl = ""
                     _uiState.value = _uiState.value.copy(
                         iptvChannelCount = 0,
                         iptvError = null,
@@ -1038,7 +1044,10 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             val result = catalogRepository.removeCustomCatalog(catalogId)
             result.onSuccess {
+                // Refresh the catalog list in UI state after removal
+                val updatedCatalogs = catalogRepository.getCatalogs()
                 _uiState.value = _uiState.value.copy(
+                    catalogs = updatedCatalogs,
                     toastMessage = "Catalog removed",
                     toastType = ToastType.SUCCESS
                 )
@@ -1147,7 +1156,7 @@ class SettingsViewModel @Inject constructor(
     fun refreshIptv(showToast: Boolean = true, configured: Boolean = false, force: Boolean = true) {
         viewModelScope.launch {
             val currentConfig = iptvRepository.observeConfig().first()
-            if (currentConfig.m3uUrl.isBlank()) return@launch
+            if (currentConfig.m3uUrl.isBlank() && currentConfig.stalkerPortalUrl.isBlank()) return@launch
 
             val runningJob = iptvLoadJob
             if (runningJob?.isActive == true) {

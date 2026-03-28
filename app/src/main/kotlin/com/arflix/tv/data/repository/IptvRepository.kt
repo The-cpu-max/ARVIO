@@ -2949,7 +2949,7 @@ class IptvRepository @Inject constructor(
             val streamId = stream.streamId ?: return@mapIndexedNotNull null
             val name = stream.name?.trim().orEmpty().ifBlank { return@mapIndexedNotNull null }
             val group = categoryMap[stream.categoryId.orEmpty()].orEmpty().ifBlank { "Uncategorized" }
-            val streamUrl = "${creds.baseUrl}/${creds.username}/${creds.password}/$streamId"
+            val streamUrl = "${creds.baseUrl}/live/${creds.username}/${creds.password}/$streamId.ts"
 
             IptvChannel(
                 id = "xtream:$streamId",

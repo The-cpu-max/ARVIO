@@ -117,7 +117,7 @@ fun SearchScreen(
     val hasSearchResults = uiState.movieResults.isNotEmpty() || uiState.tvResults.isNotEmpty()
     val hasAiResults = uiState.isAiSearch && uiState.aiResults.isNotEmpty()
 
-    // Determine which categories to show in rows
+    // Determine which categories to show in rows (filter out empty ones)
     val activeCategories: List<Category> = when {
         hasSearchResults -> {
             val list = mutableListOf<Category>()
@@ -125,7 +125,7 @@ fun SearchScreen(
             if (uiState.tvResults.isNotEmpty()) list.add(Category("s_t", "TV Shows (${uiState.tvResults.size})", uiState.tvResults))
             list
         }
-        uiState.query.isEmpty() -> uiState.discoverCategories
+        uiState.query.isEmpty() -> uiState.discoverCategories.filter { it.items.isNotEmpty() }
         else -> emptyList()
     }
     val activeLogoUrls: Map<String, String> = when {
@@ -222,7 +222,7 @@ fun SearchScreen(
                     FocusZone.SIDEBAR -> { if (sidebarFocusIndex < maxSidebarIndex) sidebarFocusIndex++; true }
                     FocusZone.RESULTS -> {
                         if (hasAiResults) false // AI grid: let native focus handle navigation
-                        else { val maxItem = (activeCategories.getOrNull(currentRowIndex)?.items?.size ?: 1) - 1; if (currentItemIndex < maxItem) currentItemIndex++; true }
+                        else { val cats = activeCategories.filter { it.items.isNotEmpty() }; val maxItem = (cats.getOrNull(currentRowIndex)?.items?.size ?: 1) - 1; if (currentItemIndex < maxItem) currentItemIndex++; true }
                     }
                     FocusZone.FILTERS -> false
                     else -> false
@@ -238,8 +238,14 @@ fun SearchScreen(
                         FocusZone.SEARCH_INPUT -> false
                         FocusZone.FILTERS -> false
                         FocusZone.RESULTS -> {
-                            if (hasAiResults) false // AI grid: let native focus handle Enter/OK on cards
-                            else { val item = activeCategories.getOrNull(currentRowIndex)?.items?.getOrNull(currentItemIndex); if (item != null) onNavigateToDetails(item.mediaType, item.id); true }
+                            if (hasAiResults) false
+                            else {
+                                // Use stable category lookup to avoid race condition with dynamic list updates
+                                val cats = activeCategories.filter { it.items.isNotEmpty() }
+                                val item = cats.getOrNull(currentRowIndex)?.items?.getOrNull(currentItemIndex)
+                                if (item != null) onNavigateToDetails(item.mediaType, item.id)
+                                true
+                            }
                         }
                     }
                 }

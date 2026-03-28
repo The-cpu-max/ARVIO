@@ -355,6 +355,8 @@ fun TvScreen(
         }
     }
 
+    var playerRetryCount by remember { mutableIntStateOf(0) }
+
     LaunchedEffect(playingChannelId, playingChannel?.streamUrl) {
         var stream = playingChannel?.streamUrl ?: return@LaunchedEffect
         if (isPlayerReleased) return@LaunchedEffect
@@ -368,6 +370,7 @@ fun TvScreen(
         }
         if (stream == lastPreparedStreamUrl) return@LaunchedEffect
         lastPreparedStreamUrl = stream
+        playerRetryCount = 0
         prepareStream(stream)
     }
 
@@ -403,8 +406,13 @@ fun TvScreen(
         val listener = object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 if (isPlayerReleased) return
-                // Use the always-current stream URL (not a stale captured value)
                 val stream = currentStreamUrl ?: return
+                playerRetryCount++
+                if (playerRetryCount > 3) {
+                    // Stop retrying after 3 attempts
+                    System.err.println("[IPTV] Playback failed after 3 retries: ${error.message} URL=$stream")
+                    return
+                }
                 exoPlayer.clearMediaItems()
                 val mediaItem = MediaItem.Builder()
                     .setUri(stream)
