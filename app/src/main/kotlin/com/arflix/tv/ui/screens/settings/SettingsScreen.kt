@@ -1520,17 +1520,27 @@ private fun CloudPairModal(
                     Box(
                         modifier = Modifier
                             .size(qrContainerSize)
-                            .background(Color.White, RoundedCornerShape(12.dp))
-                            .padding(10.dp),
+                            .background(BackgroundDark.copy(alpha = 0.92f), RoundedCornerShape(16.dp))
+                            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                            .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        QrCodeImage(
-                            data = effectiveVerificationUrl,
-                            sizePx = qrBitmapSizePx,
-                            modifier = Modifier.fillMaxSize(),
-                            foreground = android.graphics.Color.BLACK,
-                            background = android.graphics.Color.WHITE,
-                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color.White)
+                                .padding(10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            QrCodeImage(
+                                data = effectiveVerificationUrl,
+                                sizePx = qrBitmapSizePx,
+                                modifier = Modifier.fillMaxSize(),
+                                foreground = android.graphics.Color.BLACK,
+                                background = android.graphics.Color.WHITE,
+                            )
+                        }
                     }
                 }
 
@@ -2005,13 +2015,23 @@ private fun UpdateActionButton(
 ) {
     val background = when {
         !enabled -> Color.White.copy(alpha = 0.06f)
-        isFocused -> Color.White
-        else -> Color.Black.copy(alpha = 0.72f)
+        highlighted && isFocused -> Pink
+        isFocused -> Color.White.copy(alpha = 0.16f)
+        highlighted -> Pink.copy(alpha = 0.18f)
+        else -> Color.White.copy(alpha = 0.08f)
     }
     val textColor = when {
         !enabled -> TextSecondary.copy(alpha = 0.6f)
-        isFocused -> Color.Black
-        else -> Color.White
+        highlighted -> Color.White
+        isFocused -> TextPrimary
+        else -> TextSecondary
+    }
+    val borderColor = when {
+        !enabled -> Color.White.copy(alpha = 0.1f)
+        highlighted && isFocused -> Pink.copy(alpha = 0.95f)
+        highlighted -> Pink.copy(alpha = 0.4f)
+        isFocused -> Color.White.copy(alpha = 0.75f)
+        else -> Color.White.copy(alpha = 0.12f)
     }
 
     Box(
@@ -2019,8 +2039,8 @@ private fun UpdateActionButton(
             .clip(RoundedCornerShape(10.dp))
             .background(background, RoundedCornerShape(10.dp))
             .border(
-                width = if (isFocused) 2.dp else 0.dp,
-                color = if (isFocused) Color.White.copy(alpha = 0.92f) else Color.White.copy(alpha = 0.12f),
+                width = if (isFocused || highlighted) 1.5.dp else 1.dp,
+                color = borderColor,
                 shape = RoundedCornerShape(10.dp)
             )
             .clickable(enabled = enabled) { onClick() }
