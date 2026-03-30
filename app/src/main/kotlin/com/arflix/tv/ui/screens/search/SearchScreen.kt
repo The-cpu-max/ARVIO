@@ -385,9 +385,9 @@ private fun RowsLayer(
     val configuration = LocalConfiguration.current
     val screenHeight = configuration.screenHeightDp
 
-    val itemWidth = if (usePosterCards) 150.dp else 260.dp
+    val itemWidth = if (usePosterCards) 134.dp else 260.dp
     val rowHeight = if (usePosterCards) {
-        if (screenHeight <= 640) 280.dp else 360.dp
+        if (screenHeight <= 640) 245.dp else 320.dp
     } else {
         if (screenHeight <= 640) 200.dp else 260.dp
     }
@@ -475,7 +475,7 @@ private fun RowsLayer(
 @Composable
 private fun ContentGrid(items: List<MediaItem>, usePosterCards: Boolean, isLoading: Boolean, isTouchDevice: Boolean, onItemClick: (MediaItem) -> Unit, onLoadMore: () -> Unit) {
     val screenHeight = LocalConfiguration.current.screenHeightDp
-    val itemWidth = if (usePosterCards) 150.dp else 260.dp
+    val itemWidth = if (usePosterCards) 134.dp else 260.dp
     val gridState = rememberLazyGridState()
     LaunchedEffect(gridState.firstVisibleItemIndex, items.size) { val lv = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0; if (items.isNotEmpty() && lv >= items.size - 8) onLoadMore() }
 

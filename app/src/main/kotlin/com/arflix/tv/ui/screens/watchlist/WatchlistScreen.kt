@@ -91,7 +91,13 @@ fun WatchlistScreen(
         configuration.screenWidthDp >= 1600 -> 4
         else -> 3
     }
-    val cardWidth = if (isMobile) 160.dp else when (gridColumns) {
+    val cardWidth = if (usePosterCards) {
+        if (isMobile) 142.dp else when (gridColumns) {
+            5 -> 198.dp
+            4 -> 210.dp
+            else -> 188.dp
+        }
+    } else if (isMobile) 160.dp else when (gridColumns) {
         5 -> 240.dp
         4 -> 250.dp
         else -> 230.dp
