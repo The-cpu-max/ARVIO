@@ -1672,7 +1672,7 @@ class HomeViewModel @Inject constructor(
         // (ON_RESUME, isAuthenticated observer, sync completion) would keep cancelling
         // each other's fetches. The throttle mechanism prevents redundant fetches.
         if (refreshContinueWatchingJob?.isActive == true) {
-            return
+            if (force) refreshContinueWatchingJob?.cancel() else return
         }
         refreshContinueWatchingJob = viewModelScope.launch {
             try {
@@ -2397,14 +2397,21 @@ class HomeViewModel @Inject constructor(
 
                         // Save the NEXT episode to CW (local + cloud) so it appears on all devices
                         try {
-                            val followingEpisode = nextEp.episodeNumber + 1
+                            // Handle season boundaries: if this was the last episode of the season, move to next season
+                            var followingSeason = nextEp.seasonNumber
+                            var followingEpisode = nextEp.episodeNumber + 1
+                            val seasonEpisodes = mediaRepository.getSeasonEpisodes(item.id, nextEp.seasonNumber)
+                            if (seasonEpisodes != null && followingEpisode > seasonEpisodes.size) {
+                                followingSeason = nextEp.seasonNumber + 1
+                                followingEpisode = 1
+                            }
                             traktRepository.saveLocalContinueWatching(
                                 mediaType = MediaType.TV,
                                 tmdbId = item.id,
                                 title = item.title,
                                 posterPath = item.image,
                                 backdropPath = item.backdrop,
-                                season = nextEp.seasonNumber,
+                                season = followingSeason,
                                 episode = followingEpisode,
                                 episodeTitle = null,
                                 progress = 3,
@@ -2418,7 +2425,7 @@ class HomeViewModel @Inject constructor(
                                 title = item.title,
                                 poster = item.image,
                                 backdrop = item.backdrop,
-                                season = nextEp.seasonNumber,
+                                season = followingSeason,
                                 episode = followingEpisode,
                                 episodeTitle = null,
                                 progress = 0.01f,
@@ -2491,14 +2498,20 @@ class HomeViewModel @Inject constructor(
 
                         // Save the NEXT episode to CW (local + cloud) so it appears on all devices
                         try {
-                            val followingEpisode = nextEp.episodeNumber + 1
+                            var followingSeason = nextEp.seasonNumber
+                            var followingEpisode = nextEp.episodeNumber + 1
+                            val seasonEps = mediaRepository.getSeasonEpisodes(item.id, nextEp.seasonNumber)
+                            if (seasonEps != null && followingEpisode > seasonEps.size) {
+                                followingSeason = nextEp.seasonNumber + 1
+                                followingEpisode = 1
+                            }
                             traktRepository.saveLocalContinueWatching(
                                 mediaType = MediaType.TV,
                                 tmdbId = item.id,
                                 title = item.title,
                                 posterPath = item.image,
                                 backdropPath = item.backdrop,
-                                season = nextEp.seasonNumber,
+                                season = followingSeason,
                                 episode = followingEpisode,
                                 episodeTitle = null,
                                 progress = 1,
@@ -2513,7 +2526,7 @@ class HomeViewModel @Inject constructor(
                                 title = item.title,
                                 poster = item.image,
                                 backdrop = item.backdrop,
-                                season = nextEp.seasonNumber,
+                                season = followingSeason,
                                 episode = followingEpisode,
                                 episodeTitle = null,
                                 progress = 0.01f,
