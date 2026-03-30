@@ -1932,7 +1932,7 @@ private fun MobileHomeRowsLayer(
     onItemClick: (MediaItem) -> Unit,
     onItemLongClick: ((MediaItem, Boolean) -> Unit)? = null
 ) {
-    val mobileItemWidth = if (usePosterCards) 120.dp else 200.dp
+    val mobileItemWidth = if (usePosterCards) 140.dp else 200.dp
     val mobileItemSpacing = 10.dp
 
     LazyColumn(
@@ -2299,7 +2299,7 @@ private fun ContentRow(
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val isContinueWatching = category.id == "continue_watching"
-    val itemWidth = if (usePosterCards) 105.dp else 210.dp
+    val itemWidth = if (usePosterCards) 130.dp else 210.dp
     val itemSpacing = 14.dp
     val availableWidthDp = configuration.screenWidthDp.dp - 56.dp - 12.dp
     val fallbackItemsPerPage = remember(configuration, density, itemWidth, itemSpacing) {

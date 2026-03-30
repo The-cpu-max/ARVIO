@@ -1866,7 +1866,7 @@ private fun DetailsContent(
                         isCurrentRow = focusSectionForUi == FocusSection.SIMILAR,
                         focusedItemIndex = similarIndex,
                         totalItems = similar.size,
-                        itemWidth = if (usePosterCards) 91.dp else 180.dp,
+                        itemWidth = if (usePosterCards) 115.dp else 180.dp,
                         itemSpacing = 14.dp
                     )
 
@@ -1885,7 +1885,7 @@ private fun DetailsContent(
                             state = similarRowState,
                             contentPadding = PaddingValues(
                                 start = contentStartPadding,
-                                end = if (usePosterCards) 112.dp else 210.dp
+                                end = if (usePosterCards) 136.dp else 210.dp
                             ),
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
@@ -3034,7 +3034,7 @@ private fun SimilarMediaCard(
     val yearSuffix = item.year.takeIf { it.isNotBlank() }?.let { " | $it" }.orEmpty()
     MediaCard(
         item = item.copy(subtitle = "$mediaTypeLabel$yearSuffix"),
-        width = if (usePosterCards) 105.dp else 210.dp,
+        width = if (usePosterCards) 130.dp else 210.dp,
         isLandscape = !usePosterCards,
         logoImageUrl = logoImageUrl,
         showProgress = false,

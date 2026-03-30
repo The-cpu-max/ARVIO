@@ -83,7 +83,7 @@ fun WatchlistScreen(
     onBack: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val usePosterCards = false
+    val usePosterCards = com.arflix.tv.ui.components.rememberCardLayoutMode() == com.arflix.tv.ui.components.CardLayoutMode.POSTER
     val configuration = LocalConfiguration.current
     val isMobile = LocalDeviceType.current.isTouchDevice()
     val gridColumns = if (isMobile) 2 else when {
