@@ -775,12 +775,17 @@ class IptvRepository @Inject constructor(
             val loadedAtMillis = if (cachedPlaylistAt > 0L) cachedPlaylistAt else now
             val loadedAtInstant = Instant.ofEpochMilli(loadedAtMillis)
 
+            val hiddenGroups = observeHiddenGroups().first()
+            val groupOrder = observeGroupOrder().first()
+
             IptvSnapshot(
                 channels = channels,
                 grouped = grouped,
                 nowNext = nowNext,
                 favoriteGroups = favoriteGroups,
                 favoriteChannels = favoriteChannels,
+                hiddenGroups = hiddenGroups,
+                groupOrder = groupOrder,
                 epgWarning = epgWarning,
                 loadedAt = loadedAtInstant
             ).also {
