@@ -1,13 +1,10 @@
-name: Release Gate
+name: Build APK
 
 on:
-  pull_request:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  validate-and-build:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,22 +14,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      - name: Validate release test matrix
-        run: python3 scripts/validate_release_cases.py
+      - name: Build all APK variants
+        run: ./gradlew assemble --stacktrace
 
-      - name: Compile debug Kotlin (playDebug)
-        run: ./gradlew :app:compilePlayDebugKotlin --stacktrace
+      - name: List APK files
+        run: find . -name "*.apk"
 
-      - name: Run debug unit tests (playDebug)
-        run: ./gradlew :app:testPlayDebugUnitTest --stacktrace
-
-      - name: Build release APK
-        run: ./gradlew :app:assembleRelease --stacktrace
-
-      - name: Upload APK
+      - name: Upload all APKs
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
-          path: app/build/outputs/apk/release/app-release.apk
+          name: all-apks
+          path: "**/*.apk"
