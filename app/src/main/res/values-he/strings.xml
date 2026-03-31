@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ARVIO</string>
+    <string name="continue_watching">המשך צפייה</string>
+    <string name="trending_movies">סרטים פופולריים</string>
+    <string name="trending_series">סדרות פופולריות</string>
+    <string name="trending_anime">אנימה פופולרית</string>
+    <string name="my_watchlist">רשימת הצפייה שלי</string>
+    <string name="settings">הגדרות</string>
+    <string name="search">חיפוש</string>
+    <string name="play">הפעל</string>
+    <string name="sources">מקורות</string>
+    <string name="trailer">טריילר</string>
+    <string name="watched">נצפה</string>
+    <string name="unwatched">לא נצפה</string>
+    <string name="add_to_watchlist">הוסף לרשימת הצפייה</string>
+    <string name="remove_from_watchlist">הסר מרשימת הצפייה</string>
+    <string name="subtitles">כתוביות</string>
+    <string name="next_episode">פרק הבא</string>
+    <string name="season">עונה %d</string>
+    <string name="episode">פרק %d</string>
+    <string name="cast">שחקנים</string>
+    <string name="more_like_this">עוד כזה</string>
+    <string name="default_subtitle">כתובית ברירת מחדל</string>
+    <string name="auto_play_next">הפעלה אוטומטית של הבא</string>
+    <string name="off">כבוי</string>
+    <string name="on">פעיל</string>
+    <string name="loading">טוען...</string>
+    <string name="error_loading">שגיאה בטעינת התוכן</string>
+    <string name="no_results">לא נמצאו תוצאות</string>
+</resources>
