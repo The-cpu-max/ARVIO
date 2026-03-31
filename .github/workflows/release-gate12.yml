@@ -15,14 +15,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Build all APK variants
-        run: ./gradlew assemble --stacktrace
+      - name: Build APK (PlayDebug)
+        run: ./gradlew :app:assemblePlayDebug --stacktrace
 
       - name: List APK files
         run: find . -name "*.apk"
 
-      - name: Upload all APKs
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: all-apks
+          name: apk-output
           path: "**/*.apk"
