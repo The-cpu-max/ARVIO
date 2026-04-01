@@ -92,6 +92,7 @@ import androidx.core.widget.doAfterTextChanged
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Text
+import androidx.compose.ui.res.stringResource
 import com.arflix.tv.data.model.CatalogConfig
 import com.arflix.tv.data.model.CatalogSourceType
 import com.arflix.tv.ui.components.AppTopBar
@@ -723,7 +724,7 @@ fun SettingsScreen(
                         .padding(vertical = 32.dp, horizontal = 24.dp)
                 ) {
                     Text(
-                        text = "Settings",
+                        text = stringResource(R.string.settings_title),
                         style = ArflixTypography.heroTitle.copy(fontSize = androidx.compose.ui.unit.TextUnit.Unspecified),
                         color = TextPrimary,
                         modifier = Modifier
@@ -1057,7 +1058,7 @@ fun SettingsScreen(
 
         if (showContentLanguagePicker) {
             SubtitlePickerModal(
-                title = "Content Language",
+                title = stringResource(R.string.content_language),
                 options = TMDB_LANGUAGES.map { it.second },
                 selected = TMDB_LANGUAGES.firstOrNull { it.first == uiState.contentLanguage }?.second ?: "English",
                 focusedIndex = contentLanguagePickerIndex,
@@ -1727,7 +1728,7 @@ private fun MobileSettingsLayout(
     ) {
         // Title
         Text(
-            text = "Settings",
+            text = stringResource(R.string.settings_title),
             style = ArflixTypography.heroTitle.copy(fontSize = androidx.compose.ui.unit.TextUnit.Unspecified),
             color = TextPrimary,
             modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 12.dp)
@@ -2142,7 +2143,7 @@ private fun GeneralSettings(
 
         SettingsRow(
             icon = Icons.Default.Subtitles,
-            title = "Content Language",
+            title = stringResource(R.string.content_language),
             subtitle = "Titles, descriptions and metadata",
             value = TMDB_LANGUAGES.firstOrNull { it.first == contentLanguage }?.second ?: contentLanguage,
             isFocused = focusedIndex == 0,
