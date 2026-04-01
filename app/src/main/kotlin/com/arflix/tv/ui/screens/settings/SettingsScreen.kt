@@ -1028,7 +1028,7 @@ fun SettingsScreen(
 
         if (showAudioLanguagePicker) {
             SubtitlePickerModal(
-                title = "Default Audio",
+                title = stringResource(R.string.default_audio),
                 options = uiState.audioLanguageOptions,
                 selected = uiState.defaultAudioLanguage,
                 focusedIndex = audioLanguagePickerIndex,
@@ -2135,7 +2135,7 @@ private fun GeneralSettings(
     Column {
         // ── Language & Subtitles ──
         Text(
-            text = "Language & Subtitles",
+            text = stringResource(R.string.language_subtitles),
             style = ArflixTypography.caption.copy(fontSize = 11.sp, letterSpacing = 0.8.sp),
             color = TextSecondary.copy(alpha = 0.5f),
             modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
@@ -2152,7 +2152,7 @@ private fun GeneralSettings(
         Spacer(modifier = Modifier.height(10.dp))
         SettingsRow(
             icon = Icons.Default.Subtitles,
-            title = "Default Subtitle",
+            title = stringResource(R.string.default_subtitle),
             subtitle = "Auto-select subtitle language",
             value = defaultSubtitle,
             isFocused = focusedIndex == 1,
@@ -2161,7 +2161,7 @@ private fun GeneralSettings(
         Spacer(modifier = Modifier.height(10.dp))
         SettingsRow(
             icon = Icons.Default.VolumeUp,
-            title = "Default Audio",
+            title = stringResource(R.string.default_audio),
             subtitle = "Preferred audio track",
             value = defaultAudioLanguage,
             isFocused = focusedIndex == 2,
