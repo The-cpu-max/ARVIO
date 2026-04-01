@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- RTL layout direction for Hebrew locale -->
+    <style name="Theme.ArflixTV.Splash" parent="Theme.SplashScreen">
+        <item name="android:layoutDirection">rtl</item>
+        <item name="windowSplashScreenBackground">@color/background_dark</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="windowSplashScreenAnimationDuration">1000</item>
+        <item name="postSplashScreenTheme">@style/Theme.ArflixTV.Mobile</item>
+        <item name="android:windowBackground">@color/background_dark</item>
+    </style>
+
+    <!-- ARVIO TV Theme with RTL -->
+    <style name="Theme.ArflixTV" parent="@style/Theme.Leanback">
+        <item name="android:layoutDirection">rtl</item>
+        <item name="android:windowBackground">@color/background_dark</item>
+        <item name="android:colorBackground">@color/background_dark</item>
+        <item name="android:colorPrimary">@color/arctic_white</item>
+        <item name="android:colorAccent">@color/accent_white</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+
+    <!-- ARVIO Mobile Theme with RTL -->
+    <style name="Theme.ArflixTV.Mobile" parent="@style/Theme.ArflixTV">
+        <item name="android:layoutDirection">rtl</item>
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+</resources>
