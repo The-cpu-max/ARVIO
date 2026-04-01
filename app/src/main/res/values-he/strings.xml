@@ -32,7 +32,6 @@
 
     <!-- Settings Screen -->
     <string name="settings_title">הגדרות</string>
-    <string name="settings_general">כללי</string>
     <string name="settings_iptv">IPTV</string>
     <string name="settings_catalogs">קטלוגים</string>
     <string name="settings_addons">תוספים</string>
@@ -122,3 +121,4 @@
     <string name="cloud_sign_in">התחברות ARVIO Cloud</string>
     <string name="cloud_pairing">צימוד ARVIO Cloud</string>
     <string name="app_update">עדכון אפליקציה</string>
+</resources>
