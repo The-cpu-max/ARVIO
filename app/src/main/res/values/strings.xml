@@ -32,7 +32,6 @@
 
     <!-- Settings Screen -->
     <string name="settings_title">Settings</string>
-    <string name="settings_general">General</string>
     <string name="settings_iptv">IPTV</string>
     <string name="settings_catalogs">Catalogs</string>
     <string name="settings_addons">Addons</string>
@@ -124,3 +123,4 @@
     <string name="app_update">App Update</string>
 
 
+</resources>
