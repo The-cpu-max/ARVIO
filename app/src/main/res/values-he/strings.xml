@@ -29,3 +29,96 @@
     <string name="error_loading">שגיאה בטעינת התוכן</string>
     <string name="no_results">לא נמצאו תוצאות</string>
 </resources>
+
+    <!-- Settings Screen -->
+    <string name="settings_title">הגדרות</string>
+    <string name="settings_general">כללי</string>
+    <string name="settings_iptv">IPTV</string>
+    <string name="settings_catalogs">קטלוגים</string>
+    <string name="settings_addons">תוספים</string>
+    <string name="settings_accounts">חשבונות</string>
+    
+    <!-- Language & Subtitles -->
+    <string name="language_subtitles_section">שפה וכתוביות</string>
+    <string name="content_language">שפת תוכן</string>
+    <string name="content_language_desc">כותרות, תיאורים ומטא-דאטה</string>
+    <string name="default_subtitle">כתוביות ברירת מחדל</string>
+    <string name="default_subtitle_desc">בחירה אוטומטית של שפת כתוביות</string>
+    <string name="default_audio">אודיו ברירת מחדל</string>
+    <string name="default_audio_desc">רצועת אודיו מועדפת</string>
+    <string name="subtitle_size">גודל כתוביות</string>
+    <string name="subtitle_size_desc">גודל הטקסט של הכתוביות</string>
+    <string name="subtitle_color">צבע כתוביות</string>
+    <string name="subtitle_color_desc">צבע הטקסט של הכתוביות</string>
+    
+    <!-- Playback -->
+    <string name="playback_section">השמעה</string>
+    <string name="auto_play_next">הפעלה אוטומטית הבא</string>
+    <string name="auto_play_next_desc">התחל את הפרק הבא אוטומטית</string>
+    <string name="auto_play_single_source">הפעלה אוטומטית מקור יחיד</string>
+    <string name="auto_play_single_source_desc">דלג על בחירת מקור עם מקור אחד</string>
+    <string name="auto_play_min_quality">איכות מינימלית להפעלה</string>
+    <string name="auto_play_min_quality_desc">איכות מינימלית להפעלה אוטומטית</string>
+    <string name="trailer_auto_play">הפעלה אוטומטית טריילר</string>
+    <string name="trailer_auto_play_desc">הפעל טריילרים בבאנר הראשי</string>
+    <string name="match_frame_rate">התאמת קצב פריימים</string>
+    <string name="match_frame_rate_desc">כבוי, חלק או תמיד</string>
+    
+    <!-- Interface -->
+    <string name="interface_section">ממשק</string>
+    <string name="card_layout">מצב כרטיסים</string>
+    <string name="card_layout_desc">כרטיסים אופקיים או אנכיים</string>
+    <string name="ui_mode">מצב ממשק</string>
+    <string name="ui_mode_desc">אלץ טלוויזיה, טאבלט או טלפון</string>
+    <string name="skip_profile_selection">דלג על בחירת פרופיל</string>
+    <string name="skip_profile_selection_desc">טען את הפרופיל האחרון אוטומטית</string>
+    
+    <!-- Network -->
+    <string name="network_section">רשת</string>
+    <string name="dns_provider">ספק DNS</string>
+    <string name="dns_provider_desc">פתור בקשות API וסטרימינג</string>
+    
+    <!-- IPTV Settings -->
+    <string name="iptv_playlist">פלייליסט</string>
+    <string name="iptv_playlist_desc">הגדר כתובת M3U (או Xtream host/user/pass) וכתובת EPG אופציונלית</string>
+    <string name="iptv_playlist_not_set">לא מוגדר</string>
+    <string name="iptv_refresh">רענן נתוני IPTV</string>
+    <string name="iptv_delete">מחק פלייליסט M3U</string>
+    <string name="iptv_stalker_portal">Stalker Portal (MAC)</string>
+    <string name="iptv_stalker_not_configured">לא מוגדר</string>
+    
+    <!-- Accounts -->
+    <string name="linked_accounts">חשבונות מקושרים</string>
+    <string name="arvio_cloud">ARVIO Cloud</string>
+    <string name="arvio_cloud_desc">חשבון אופציונלי לסנכרון פרופילים, תוספים, קטלוגים והגדרות IPTV</string>
+    <string name="trakt">Trakt.tv</string>
+    <string name="trakt_desc">סנכרן היסטוריית צפייה, התקדמות ורשימת מעקב</string>
+    <string name="switch_profile">החלף פרופיל</string>
+    <string name="switch_profile_desc">עבור לפרופיל משתמש אחר</string>
+    <string name="app_updates">עדכוני אפליקציה</string>
+    <string name="app_updates_desc">בדוק ב-GitHub Releases לגרסת ARVIO העדכנית</string>
+    
+    <!-- Buttons/Actions -->
+    <string name="connect">התחבר</string>
+    <string name="connected">מחובר</string>
+    <string name="disconnect">התנתק</string>
+    <string name="cancel">ביטול</string>
+    <string name="confirm">אישור</string>
+    <string name="add">הוסף</string>
+    <string name="edit">ערוך</string>
+    <string name="delete">מחק</string>
+    <string name="refresh">רענן</string>
+    <string name="install">התקן</string>
+    <string name="check">בדוק</string>
+    <string name="update">עדכן</string>
+    <string name="switch">החלף</string>
+    <string name="paste_from_clipboard">הדבק מלוח</string>
+    
+    <!-- Modals -->
+    <string name="add_addon">הוסף תוסף</string>
+    <string name="configure_iptv">הגדר IPTV</string>
+    <string name="add_catalog">הוסף קטלוג</string>
+    <string name="rename_catalog">שנה שם קטלוג</string>
+    <string name="cloud_sign_in">התחברות ARVIO Cloud</string>
+    <string name="cloud_pairing">צימוד ARVIO Cloud</string>
+    <string name="app_update">עדכון אפליקציה</string>
